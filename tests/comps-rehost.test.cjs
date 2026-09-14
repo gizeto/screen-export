@@ -205,6 +205,57 @@ async function browserTests(script) {
     canvas.getContext('2d').fillRect(0, 0, 2, 2);
     const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
     const imageResponse = () => ({ response: png });
+    await test('Pixhost thumbnail-only images resolve across domains and server numbers without fetching thumbnails', async () => {
+        for (const [domain, server] of [['pixhost.cc', '3'], ['pixhost.to', '97'], ['pixho.st', '12']]) {
+            calls.length = 0;
+            handler = imageResponse;
+            const thumbnail = `https://t${server}.${domain}/thumbs/5385/frame.png`;
+            const file = await api.fetchOriginal({ source: `https://site.test/redirect?url=${encodeURIComponent(thumbnail)}` }, controller().signal);
+            equal(calls.map(call => call.url), [`https://img${server}.${domain}/images/5385/frame.png`]);
+            equal(file.extension, 'png');
+        }
+        for (const url of ['https://t3.pixhost.cc.evil.test/thumbs/1/a.png', 'https://t3.other.test/thumbs/1/a.png',
+            'https://t3.pixhost.cc/other/a.png', 'https://pixhost.cc/show/1/a.png']) equal(api.originalURL(url), url);
+    });
+    const pixhostPage = 'https://pixhost.cc/show/5385/764953339_1-source-040774.png';
+    const pixhostThumbnail = 'https://t3.pixhost.cc/thumbs/5385/764953339_1-source-040774.png';
+    const pixhostOriginal = 'https://img3.pixhost.cc/images/5385/764953339_1-source-040774.png';
+    const pixhostFixture = `<meta property="og:image" content="${pixhostThumbnail}">
+        <meta property="og:image:secure_url" content="${pixhostThumbnail}">
+        <img id="image" src="${pixhostOriginal}" width="3840" height="1604">
+        <script>window.pixhostScriptRan=true</script>`;
+    for (const [name, html, original] of [
+        ['displayed image takes precedence over thumbnail metadata', pixhostFixture.replace('img3.pixhost.cc', 'img4.pixhost.cc'), pixhostOriginal.replace('img3.', 'img4.')],
+        ['thumbnail metadata resolves when the displayed image is absent', `<meta property="og:image" content="${pixhostThumbnail}">`, pixhostOriginal],
+    ]) {
+        await test(`Pixhost ${name}`, async () => {
+            calls.length = 0;
+            handler = options => {
+                if (options.url === pixhostPage) return { response: new Blob([html], { type: 'text/html' }) };
+                if (options.url === original) return imageResponse();
+                throw new Error('Unexpected image URL');
+            };
+            const file = await api.fetchOriginal({ link: pixhostPage, source: pixhostThumbnail }, controller().signal);
+            equal(calls.map(call => call.url), [pixhostPage, original]);
+            equal(file.extension, 'png');
+            equal([...new Uint8Array(await file.blob.arrayBuffer())], [...new Uint8Array(await png.arrayBuffer())]);
+            ok(!globalThis.pixhostScriptRan);
+        });
+    }
+    await test('Pixhost page failures fall back to the original URL but access blocks stop immediately', async () => {
+        for (const status of [404, 403]) {
+            calls.length = 0;
+            handler = options => options.url === pixhostPage ? { status } : imageResponse();
+            const action = () => api.fetchOriginal({ link: pixhostPage, source: pixhostThumbnail }, controller().signal);
+            if (status === 403) {
+                await rejects(action, /HTTP 403/);
+                equal(calls.map(call => call.url), [pixhostPage]);
+            } else {
+                equal((await action()).extension, 'png');
+                equal(calls.map(call => call.url), [pixhostPage, pixhostOriginal]);
+            }
+        }
+    });
     await test('host metadata is inert and original image bytes and MIME type are preserved', async () => {
         calls.length = 0;
         handler = options => options.url.includes('/image/') ? { response: new Blob([
