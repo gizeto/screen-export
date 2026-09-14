@@ -14,7 +14,7 @@ This script targets **Chrome with Tampermonkey**. Use Tampermonkey **5.4.6226 or
 
 There is no userscript execution before the context-menu command: no page scan, listener, cookie/storage access, or request. The userscript manager itself still needs site permissions. After invocation, thumbnail previews can load images. Original-image resolution and slow.pics requests start only when you choose an output action. Tampermonkey may ask to allow an unfamiliar image host.
 
-Full-image links and standard host-page image metadata take precedence over thumbnails. Small URL resolvers handle ImgBB, img4k, and proxy/redirect URLs; page detection does not use tracker-specific selectors. Original bytes and image formats are preserved, and slow.pics image optimization is disabled. Known unresolved thumbnails, invalid image responses, and failed uploads produce errors.
+Full-image links and standard host-page image metadata take precedence over thumbnails. Small URL resolvers handle ImgBB, img4k, Pixhost (pixhost.cc, pixhost.to, and pixho.st), and proxy/redirect URLs; page detection does not use tracker-specific selectors. Pixhost pages use their displayed full-size image; thumbnail URLs are also resolved to originals. Original bytes and image formats are preserved, and slow.pics image optimization is disabled. Known unresolved thumbnails, invalid image responses, and failed uploads produce errors.
 
 Transfers run sequentially. **Cancel transfer** stops further requests; completed downloads remain saved. After an interrupted upload, **Retry upload** resumes the same collection in the open dialog. Its configuration stays locked until **Start over**. Closing the dialog, navigating away, or starting over discards local retry state; an incomplete remote collection may remain. A timeout during collection creation can also leave an unconfirmed collection. No remote collections are automatically deleted.
 
@@ -36,7 +36,7 @@ The integration uses slow.pics' website upload endpoints, which can change. Auto
 
 ## Tests
 
-Run `node --test tests/*.test.cjs`. The comparison tests use an isolated headless Chrome profile and no additional packages. Set `CHROME_BIN` if Chrome is not in a standard location. HTTP(S) requests from the test page are blocked in Chrome, external fixture resources are also blocked by CSP, and transfer APIs are mocked. Sanitized examples are embedded in the tests; when `tmp/comp-examples/ex1.html` through `ex8.html` are present, those samples are checked too. Browser tests are skipped when Chrome cannot be found.
+Run `node --test tests/*.test.cjs`. The comparison tests use an isolated headless Chrome profile and no additional packages. Set `CHROME_BIN` if Chrome is not in a standard location. HTTP(S) requests from the test page are blocked in Chrome, external fixture resources are also blocked by CSP, and transfer APIs are mocked. Sanitized examples are embedded in the tests; when `tmp/comp-examples/ex1.html` through `ex9.html` and `ex9_pixhost.html` are present, those samples are checked too. Browser tests are skipped when Chrome cannot be found.
 
 Before release, manually check the native Tampermonkey menu, absence of script activity before invocation, and an actual upload and download. Headless DOM tests do not verify userscript-manager permissions, browser-managed sessions, or the live slow.pics service.
 

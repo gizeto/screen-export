@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         comps-rehost
 // @namespace    https://github.com/gizeto
-// @version      1.1.0
+// @version      1.1.1
 // @description  Select nearby comparison images, upload to slow.pics, or download originals on demand.
 // @author       gizeto
 // @match        http://*/*
@@ -17,6 +17,9 @@
 // @connect      slow.pics
 // @connect      ibb.co
 // @connect      img4k.net
+// @connect      pixhost.cc
+// @connect      pixhost.to
+// @connect      pixho.st
 // @connect      *
 // ==/UserScript==
 
@@ -105,6 +108,11 @@
         }
         if (url.hostname === 'img4k.net' || url.hostname === 'i.ibb.co') {
             url.pathname = url.pathname.replace(/\.(?:md|th)(?=\.[^.]+$)/i, '');
+        }
+        const pixhost = url.hostname.match(/^t(\d+)\.(pixhost\.(?:cc|to)|pixho\.st)$/);
+        if (pixhost && url.pathname.startsWith('/thumbs/')) {
+            url.hostname = `img${pixhost[1]}.${pixhost[2]}`;
+            url.pathname = url.pathname.replace(/^\/thumbs\//, '/images/');
         }
         return url.href;
     }
@@ -321,10 +329,15 @@
                     const prefix = await blob.slice(0, 256).text();
                     if (/html/i.test(blob.type) || /^\s*(?:<!doctype|<html|<head|<meta)/i.test(prefix)) {
                         const html = inertHTML(await blob.text());
+                        const pageURL = response.finalUrl || url;
+                        // Pixhost advertises thumbnails in Open Graph; its displayed image is the original.
+                        const pixhostImage = /^(?:www\.)?(?:pixhost\.(?:cc|to)|pixho\.st)$/.test(new URL(pageURL).hostname)
+                            ? html.querySelector('img#image')?.getAttribute('src') : '';
                         const meta = html.querySelector('meta[property="og:image:secure_url"]')
                             || html.querySelector('meta[property="og:image"]')
                             || html.querySelector('link[rel="image_src"]');
-                        const next = originalURL(httpURL(meta?.getAttribute('content') || meta?.getAttribute('href'), response.finalUrl || url));
+                        const next = originalURL(httpURL(pixhostImage, pageURL)
+                            || httpURL(meta?.getAttribute('content') || meta?.getAttribute('href'), pageURL));
                         if (!next) throw new Error('Host page has no original-image metadata. Check access on the image host or deselect this image.');
                         url = next;
                     } else {
