@@ -6,15 +6,23 @@ Install [comps-rehost.user.js](comps-rehost.user.js) in Tampermonkey, or paste i
 
 This script targets **Chrome with Tampermonkey**. Use Tampermonkey **5.4.6226 or newer** for Blob downloads; other managers are not supported. Enable Tampermonkey's browser context menu and downloads permission. PNG, JPG, WebP, GIF, and BMP extensions must be allowed in its download settings.
 
-1. Right-click the page, then choose **Tampermonkey → comps-rehost**.
+1. Click the Tampermonkey toolbar icon, find **comps-rehost**, and choose **Select comparison images**. The command is also available in Tampermonkey's page context menu when enabled.
 2. Click the comparison area. The script suggests the nearest image section. Use **Expand to parent** for a larger block or **Choose another area** to pick again.
-3. Click images to toggle them, or click the first image and Shift-click the last to select an inclusive range in either direction. **Select all** and **Clear** are also available.
+3. Click images to toggle them, or click the first image and Shift-click the last to select an inclusive range in either direction. **Select all** and **Clear** are also available. Hover over the nearby **?** icon (or focus it with the keyboard) for selection help.
 4. Check the collection name, column names, and preview. Consecutive selected images form rows. A nearby heading with names separated by `vs`, `|`, or repeated nonbreaking spaces (`&nbsp;`) supplies names and column count; otherwise the defaults are two unnamed columns. Single spaces within names, such as `Old GroupA`, are preserved.
 5. Choose **Upload to slow.pics** or **Download originals**. Both actions require complete rows so every column has the same number of pictures. Collections are **unlisted by default**; check **Public on slow.pics** to make a collection public.
 
 The collection name is suggested from the page title as `Movie Title Year Resolution - Source vs Encode` or `TV Title [Year] S01 Resolution - Source vs Encode`, using all current column names. Dot-separated titles are normalized, and alternate titles after `AKA` and release details are omitted. Unrecognized titles fall back to `Comparison - Source vs Encode`. The suggestion follows column edits until you edit the collection name yourself.
 
-There is no userscript execution before the context-menu command: no page scan, listener, cookie/storage access, or request. The userscript manager itself still needs site permissions. After invocation, thumbnail previews can load images. Original-image resolution and slow.pics requests start only when you choose an output action. Tampermonkey may ask to allow an unfamiliar image host.
+To enable title search, click the Tampermonkey toolbar icon, find **comps-rehost**, and choose **⚙ TMDB API key: not set**. Paste your [TMDB API key](https://developer.themoviedb.org/docs/authentication-application) into the prompt and click **OK**. The menu label changes to **⚙ TMDB API key: configured**. This works before opening the comparison picker; there is no in-page Settings panel. The key is saved as `tmdb_api_key` in Tampermonkey's userscript storage for future sessions. Submit an empty value to clear it, or **Cancel** to keep the current key. Changes apply to an open comparison dialog in the same tab. The saved key is never displayed in the menu or prefilled in the prompt, and is never included in uploads or debug logs. After updating the userscript, reload the page to register the new menu commands.
+
+With a saved key, choose **Movie** or **TV** under **Search for**, enter a title, and click **Search TMDB** (or press Enter). The title is suggested from the page when recognizable. Choose the matching title/year from **Search results** to fill the TMDB id. Search retrieves the first page of matches; refine the title if needed. Search makes a request directly to TMDB only on demand; typing does not send requests, and search never contacts slow.pics. Errors do not trigger automatic retries. Changing Movie/TV clears the previous link to avoid mixing movie and series IDs.
+
+The **TMDB id** field is always available, including without an API key. Enter `tv/124` for a TV series or `movie/567` for a movie, using its numeric TMDB ID (for TV, use the series ID, not a season or episode ID). Leave it blank for no link. The link stays fixed during upload retries; use **Start over** to change it. Invalid references block uploads but do not block downloads.
+
+The upload sends `tmdbId` as `MOVIE_<id>` or `TV_<id>`, matching the format used by [McBaws/comp](https://github.com/McBaws/comp/blob/main/comp.py). Live linking remains unverified because direct inspection of the slow.pics form was blocked.
+
+On page load, a small startup step registers the two Tampermonkey menu commands and reads whether a TMDB key is configured. It does not scan images, create page UI, read cookies, or make network requests. **Select comparison images** launches the picker; thumbnail previews can then load images. Original-image resolution and slow.pics requests start only when you choose an output action. Tampermonkey may ask to allow an unfamiliar image host.
 
 Full-image links and standard host-page image metadata take precedence over thumbnails. Small URL resolvers handle ImgBB, img4k, Pixhost (pixhost.cc, pixhost.to, and pixho.st), and proxy/redirect URLs; page detection does not use tracker-specific selectors. Pixhost pages use their displayed full-size image; thumbnail URLs are also resolved to originals. Original bytes and image formats are preserved, and slow.pics image optimization is disabled. Known unresolved thumbnails, invalid image responses, and failed uploads produce errors.
 
@@ -40,6 +48,6 @@ The integration uses slow.pics' website upload endpoints, which can change. Auto
 
 Run `npm ci`, then `npm test` (or `node --test tests/*.test.cjs`). Tests run entirely in Node using jsdom; no Chrome or other browser is launched. External resources are not loaded, and image decoding, dialogs, and transfer APIs are mocked. Sanitized examples are embedded in the tests; when `tmp/comp-examples/ex1.html` through `ex10.html` and `ex9_pixhost.html` are present, those samples are checked too.
 
-Before release, manually check the native Tampermonkey menu, absence of script activity before invocation, and an actual upload and download. Node DOM tests do not verify native image decoding, dialog behavior, userscript-manager permissions, browser-managed sessions, or the live slow.pics service.
+Before release, manually check the native Tampermonkey menu and key prompt, absence of page UI and network requests before launching the picker, and an actual upload and download. Node DOM tests do not verify native image decoding, dialog behavior, userscript-manager permissions, browser-managed sessions, or the live slow.pics service.
 
 The original reference userscript and supplied HTML examples are kept locally in `tmp/`, which is ignored by Git.

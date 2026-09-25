@@ -5,11 +5,14 @@ const { JSDOM, VirtualConsole } = require('jsdom');
 const { test } = require('node:test');
 
 const source = readFileSync(join(__dirname, '..', 'comps-rehost.user.js'), 'utf8');
-test('metadata defers injection and requests no page-script or persistent-storage access', () => {
-    assert.match(source, /@run-at\s+context-menu/);
+test('metadata enables menu registration and limits storage access to userscript settings', () => {
+    assert.match(source, /@run-at\s+document-end/);
     assert.match(source, /@sandbox\s+DOM/);
-    assert.doesNotMatch(source, /@(?:require|resource|icon)\s|@grant\s+(?:unsafeWindow|GM_.*Value)/);
-    assert.doesNotMatch(source, /MutationObserver|setInterval|GM_registerMenuCommand/);
+    assert.doesNotMatch(source, /@(?:require|resource|icon)\s|@grant\s+unsafeWindow/);
+    assert.match(source, /@grant\s+GM_getValue/);
+    assert.match(source, /@grant\s+GM_setValue/);
+    assert.match(source, /@grant\s+GM_registerMenuCommand/);
+    assert.doesNotMatch(source, /MutationObserver|setInterval/);
 });
 
 // DOM behavior runs entirely in Node; jsdom does not load external resources.
@@ -45,6 +48,23 @@ async function domTests(script, examples, pixhostHTML) {
         catch (error) { results.push({ name, ok: false, error: error.stack }); }
     };
     const calls = [];
+    const savedSettings = new Map();
+    const settingReads = [];
+    globalThis.GM_getValue = (key, fallback) => { settingReads.push(key); return savedSettings.get(key) ?? fallback; };
+    globalThis.GM_setValue = (key, value) => savedSettings.set(key, value);
+    const menus = new Map();
+    let nextMenuId = 1, promptValue = null;
+    const prompts = [], alerts = [];
+    globalThis.GM_registerMenuCommand = (label, callback, options = {}) => {
+        const id = options.id ?? nextMenuId++;
+        menus.set(id, { label, callback });
+        return id;
+    };
+    globalThis.prompt = (message, value) => { prompts.push({ message, value }); return promptValue; };
+    globalThis.alert = message => alerts.push(message);
+    const keyMenu = () => [...menus.values()].find(menu => menu.label.startsWith('⚙ TMDB API key:'));
+    const configureKey = value => { promptValue = value; keyMenu().callback(); };
+    const launchFromMenu = () => [...menus.values()].find(menu => menu.label === 'Select comparison images').callback();
     let handler = () => { throw new Error('Unexpected request'); };
     globalThis.GM_xmlhttpRequest = options => {
         calls.push(options);
@@ -60,19 +80,47 @@ async function domTests(script, examples, pixhostHTML) {
     };
     globalThis.GM_download = () => { throw new Error('Unexpected download'); };
     globalThis.GM_cookie = { list() { throw new Error('Unexpected cookie access'); } };
-    const exposed = script.replace('    chooseArea();\n})();', `
+    const exposed = script.replace('        chooseArea();\n    }\n})();', `
         globalThis.rehost = { httpURL, unwrapURL, originalURL, columnNames, imageInfo, inertHTML, detect, scan,
             selectRange, fetchOriginal, imageFile, request, upload, download, filename, slowToken, state,
             showArea, chooseArea, expandArea, close, dialog, picker, candidates, columns, names,
             uploadButton, downloadButton, summary, settings, preview, run, status, resetButton, result, browserID,
-            diagnostics, retryAfter, slowRequest, fileColumns, collectionName, title, publicInput };
+            diagnostics, retryAfter, slowRequest, fileColumns, collectionName, title, publicInput,
+            tmdbReference, comparisonFields, tmdbType, tmdbInput, tmdbError, searchTMDB, findTMDB,
+            tmdbQuery, tmdbSearchSection, tmdbSearchHint,
+            tmdbResults, tmdbSearchButton, tmdbSearchStatus };
         chooseArea();
+    }
     })();`);
-    await test('activation installs only the picker, without resolving images or accessing cookies', () => {
-        ok(!document.getElementById('comps-rehost-dialog'));
+    await test('startup registers Tampermonkey menus without creating UI or sending requests', () => {
+        const before = document.documentElement.innerHTML;
         (0, eval)(exposed);
+        equal(document.documentElement.innerHTML, before);
+        equal(calls.length, 0);
+        equal([...menus.values()].map(menu => menu.label), ['Select comparison images', '⚙ TMDB API key: not set']);
+        equal([...savedSettings], []);
+    });
+    await test('TMDB menu configures the key before launching and updates its status without duplicates', () => {
+        configureKey(' BEFORE_LAUNCH_KEY ');
+        equal(savedSettings.get('tmdb_api_key'), 'BEFORE_LAUNCH_KEY');
+        equal(keyMenu().label, '⚙ TMDB API key: configured');
+        configureKey(null);
+        equal(savedSettings.get('tmdb_api_key'), 'BEFORE_LAUNCH_KEY');
+        equal(prompts.at(-1).value, '');
+        ok(!JSON.stringify(prompts).includes('BEFORE_LAUNCH_KEY'));
+        configureKey('');
+        equal(keyMenu().label, '⚙ TMDB API key: not set');
+        equal(menus.size, 2);
+        ok(!document.getElementById('comps-rehost-dialog'));
+        equal(calls.length, 0);
+    });
+    await test('launch menu installs only the picker, without resolving images or accessing cookies', () => {
+        launchFromMenu();
         equal(calls.length, 0);
         ok(!rehost.picker.hidden && !rehost.dialog.open);
+        ok(!rehost.dialog.querySelector('input[type="password"]'));
+        ok(![...rehost.picker.querySelectorAll('button'), ...rehost.dialog.querySelectorAll('button')]
+            .some(button => button.textContent === 'Settings'));
     });
     const api = globalThis.rehost;
     if (!api) return results;
@@ -448,6 +496,143 @@ async function domTests(script, examples, pixhostHTML) {
         await rejects(() => Promise.resolve(api.fileColumns(['x265', 'x265_'])), /identical filenames/);
         equal(calls.length, 0);
     });
+    await test('TMDB linking validates typed references and encodes movie and TV links without lookups', async () => {
+        calls.length = 0;
+        equal(api.tmdbReference(' movie/00123 '), 'MOVIE_123');
+        equal(api.tmdbReference('TV/456'), 'TV_456');
+        equal(api.tmdbReference(''), '');
+        equal(api.tmdbReference('  '), '');
+        for (const value of ['123', 'tv/0', 'tv/-1', 'movie/1.5', 'tv/1e3', 'tv/12abc', 'TV_123', 'movie/9007199254740992', 'tv/123/season/1']) {
+            await rejects(() => api.tmdbReference(value), /TMDB id/);
+        }
+        await rejects(() => api.tmdbReference('person/123'), /TMDB id/);
+        equal(calls.length, 0);
+    });
+    await test('TMDB menu saves and clears the key and refreshes the open dialog without changing its reference', async () => {
+        calls.length = 0;
+        ok(settingReads.every(key => key === 'tmdb_api_key'));
+        ok(api.tmdbSearchSection.hidden && !api.tmdbSearchHint.hidden);
+        ok(!api.tmdbInput.disabled && !api.tmdbInput.hidden);
+        await api.findTMDB();
+        equal(calls.length, 0);
+        api.tmdbInput.value = 'tv/124';
+        api.tmdbInput.dispatchEvent(new Event('input'));
+        equal(api.tmdbReference(api.tmdbInput.value), 'TV_124');
+        configureKey(' PRIVATE_SAVED_KEY ');
+        equal([...savedSettings], [['tmdb_api_key', 'PRIVATE_SAVED_KEY']]);
+        ok(!api.tmdbSearchSection.hidden && api.tmdbSearchHint.hidden);
+        equal(api.tmdbInput.value, 'tv/124');
+        const setValue = GM_setValue;
+        GM_setValue = () => { throw new Error('storage unavailable'); };
+        configureKey('not-saved');
+        ok(alerts.at(-1).includes('Could not save'));
+        equal(keyMenu().label, '⚙ TMDB API key: configured');
+        equal(savedSettings.get('tmdb_api_key'), 'PRIVATE_SAVED_KEY');
+        GM_setValue = setValue;
+        configureKey('');
+        equal(savedSettings.get('tmdb_api_key'), '');
+        ok(api.tmdbSearchSection.hidden);
+        equal(api.tmdbInput.value, 'tv/124');
+        api.tmdbInput.value = '';
+        api.tmdbInput.dispatchEvent(new Event('input'));
+        ok(!api.diagnostics.join('\n').includes('PRIVATE_SAVED_KEY'));
+        equal(calls.length, 0);
+    });
+    await test('comparison fields include optional TMDB links only when set', () => {
+        const job = { items: [{}, {}], names: ['GroupA', 'GroupB'], title: 'Example', public: false, browserId: 'id' };
+        ok(!api.comparisonFields(job).has('tmdbId'));
+        ok(!api.comparisonFields({ ...job, tmdbId: '' }).has('tmdbId'));
+        for (const tmdbId of ['MOVIE_123', 'TV_456']) {
+            const fields = api.comparisonFields({ ...job, tmdbId });
+            equal(fields.getAll('tmdbId'), [tmdbId]);
+            equal(fields.get('public'), 'false');
+            equal(fields.get('comparisons[0].imageNames[1]'), 'GroupB');
+        }
+    });
+    await test('TMDB title search sends the API key only to TMDB and redacts credentials and queries', async () => {
+        calls.length = 0;
+        handler = () => ({ responseText: JSON.stringify({ results: [
+            { id: 123, title: 'Example Film', release_date: '2020-01-02' },
+            { id: 124, title: 'Example Film', release_date: '1990-01-02' },
+            { id: -1, title: 'Invalid' }
+        ] }) });
+        equal(await api.searchTMDB('MOVIE', 'PRIVATE_SEARCH_TITLE', 'PRIVATE_TMDB_KEY', controller().signal), [
+            { id: '123', title: 'Example Film', year: '2020' }, { id: '124', title: 'Example Film', year: '1990' }
+        ]);
+        const request = calls[0], url = new URL(request.url);
+        equal(url.origin, 'https://api.themoviedb.org');
+        equal(url.pathname, '/3/search/movie');
+        equal(url.searchParams.get('query'), 'PRIVATE_SEARCH_TITLE');
+        equal(url.searchParams.get('api_key'), 'PRIVATE_TMDB_KEY');
+        equal(request.anonymous, true);
+        ok(!request.cookiePartition && !request.headers.Authorization && !request.headers['X-XSRF-TOKEN']);
+        handler = () => ({ responseText: JSON.stringify({ results: [{ id: 456, name: 'Example Show' }] }) });
+        equal(await api.searchTMDB('TV', 'Example Show', 'PRIVATE_TMDB_KEY', controller().signal),
+            [{ id: '456', title: 'Example Show', year: 'Unknown year' }]);
+        equal(new URL(calls[1].url).pathname, '/3/search/tv');
+        equal(new URL(calls[1].url).searchParams.get('api_key'), 'PRIVATE_TMDB_KEY');
+        ok(!calls[1].headers.Authorization);
+        ok(!/PRIVATE_SEARCH_TITLE|PRIVATE_TMDB/.test(api.diagnostics.join('\n')));
+        equal(calls.length, 2);
+    });
+    await test('TMDB search handles missing credentials, failed authentication and malformed or empty results', async () => {
+        calls.length = 0;
+        await rejects(() => api.searchTMDB('MOVIE', 'Example', '', controller().signal), /TMDB API key/);
+        await rejects(() => api.searchTMDB('MOVIE', '', 'key', controller().signal), /title/);
+        equal(calls.length, 0);
+        handler = () => ({ status: 401 });
+        await rejects(() => api.searchTMDB('MOVIE', 'Example', 'key', controller().signal), /rejected the API key/);
+        for (const responseText of ['not json', '{}']) {
+            handler = () => ({ responseText });
+            await rejects(() => api.searchTMDB('MOVIE', 'Example', 'key', controller().signal), /invalid search response/);
+        }
+        handler = () => ({ responseText: '{"results":[]}' });
+        equal(await api.searchTMDB('MOVIE', 'Example', 'key', controller().signal), []);
+        handler = () => ({ status: 429, responseHeaders: 'Retry-After: 120' });
+        await rejects(() => api.searchTMDB('MOVIE', 'Example', 'key', controller().signal), /rate limit/);
+        const count = calls.length;
+        await rejects(() => api.searchTMDB('MOVIE', 'Example', 'key', controller().signal), /rate limit/);
+        equal(calls.length, count);
+        api.retryAfter.delete('https://api.themoviedb.org');
+    });
+    await test('TMDB dropdown selects movie/TV IDs, cancels stale searches and never searches on input', async () => {
+        calls.length = 0;
+        api.tmdbQuery.value = 'Example';
+        api.tmdbQuery.dispatchEvent(new Event('input'));
+        configureKey('test-key');
+        equal(calls.length, 0);
+        handler = () => ({ responseText: JSON.stringify({ results: [{ id: 123, title: 'Example Film', release_date: '2020-01-01' }] }) });
+        await api.findTMDB();
+        equal(new URL(calls[0].url).searchParams.get('api_key'), 'test-key');
+        equal(api.tmdbInput.value, '');
+        equal(api.tmdbResults.options[1].textContent, 'Example Film (2020) · ID 123');
+        api.tmdbResults.value = '123';
+        api.tmdbResults.dispatchEvent(new Event('change'));
+        equal(api.tmdbInput.value, 'movie/123');
+        api.tmdbType.value = 'TV';
+        api.tmdbType.dispatchEvent(new Event('change'));
+        equal(api.tmdbInput.value, '');
+        ok(api.tmdbResults.disabled);
+        handler = () => ({ responseText: JSON.stringify({ results: [{ id: 456, name: 'Example Show', first_air_date: '2021-01-01' }] }) });
+        await api.findTMDB();
+        api.tmdbResults.value = '456';
+        api.tmdbResults.dispatchEvent(new Event('change'));
+        equal(api.tmdbReference(api.tmdbInput.value), 'TV_456');
+        handler = () => null;
+        const pending = api.findTMDB();
+        await Promise.resolve();
+        api.tmdbQuery.value = 'Another show';
+        api.tmdbQuery.dispatchEvent(new Event('input'));
+        await pending;
+        equal(api.tmdbResults.options.length, 1);
+        ok(!api.tmdbSearchButton.disabled);
+        handler = () => ({ responseText: '{"results":[]}' });
+        await api.findTMDB();
+        ok(api.tmdbResults.disabled && api.tmdbSearchStatus.textContent.includes('No matches'));
+        ok(calls.every(call => new URL(call.url).origin === 'https://api.themoviedb.org'));
+        api.tmdbType.value = 'MOVIE';
+        api.tmdbType.dispatchEvent(new Event('change'));
+    });
     await test('partial uploads resume the same collection and slot with correct multipart names and file types', async () => {
         calls.length = 0;
         let fail = true;
@@ -461,7 +646,7 @@ async function domTests(script, examples, pixhostHTML) {
             return imageResponse();
         };
         const job = { items: [{ source: 'https://images.test/a.png' }, { source: 'https://images.test/b.png' }],
-            names: ['Source', 'Encode'], title: 'A < B', public: true, browserId: 'browser-id', done: 0 };
+            names: ['Source', 'Encode'], title: 'A < B', public: true, tmdbId: 'TV_456', browserId: 'browser-id', done: 0 };
         await rejects(() => api.upload(job, controller().signal, () => {}), /HTTP 503/);
         equal(job.done, 1);
         ok(job.pending);
@@ -471,6 +656,7 @@ async function domTests(script, examples, pixhostHTML) {
         const creates = calls.filter(call => call.url.endsWith('/upload/comparison'));
         equal(creates.length, 1);
         equal(creates[0].data.get('public'), 'true');
+        equal(creates[0].data.get('tmdbId'), 'TV_456');
         equal(creates[0].data.get('optimize-images'), 'false');
         equal(creates[0].data.get('comparisons[0].imageNames[1]'), 'Encode');
         equal(creates[0].data.get('comparisons[0].name'), '0001');
@@ -481,6 +667,7 @@ async function domTests(script, examples, pixhostHTML) {
         equal(uploads[0].data.get('file').name, 'Source0001.png');
         equal(uploads[1].data.get('file').name, 'Encode0001.png');
         equal(uploads[0].headers['X-XSRF-TOKEN'], 'test token');
+        ok(uploads.every(call => !call.data.has('tmdbId')));
         ok(uploads.every(call => call.cookiePartition.topLevelSite === 'https://slow.pics' && call.anonymous === false));
     });
     await test('malformed comparison responses and unsuccessful image acknowledgements never report success', async () => {
@@ -535,6 +722,7 @@ async function domTests(script, examples, pixhostHTML) {
         equal(api.state.images.length, 4);
         equal(api.state.selected.size, 0);
         equal(api.publicInput.checked, false);
+        equal(api.tmdbInput.value, '');
         equal(api.title.value, 'Hot Dog 2018 1080p - Source vs Encode');
         api.names.children[1].value = 'GroupB';
         api.names.children[1].dispatchEvent(new Event('input'));
@@ -545,6 +733,19 @@ async function domTests(script, examples, pixhostHTML) {
         equal(api.state.selected.size, 4);
         ok(!api.uploadButton.disabled);
         equal(api.preview.children.length, 4);
+        calls.length = 0;
+        api.tmdbInput.value = 'invalid';
+        api.tmdbInput.dispatchEvent(new Event('input'));
+        ok(api.uploadButton.disabled && !api.downloadButton.disabled);
+        ok(!api.tmdbError.hidden);
+        await api.run('upload');
+        equal(api.state.job, null);
+        equal(calls.length, 0);
+        ok(api.status.textContent.includes('TMDB id'));
+        api.tmdbInput.value = 'movie/123';
+        api.tmdbInput.dispatchEvent(new Event('input'));
+        equal(api.tmdbType.value, 'MOVIE');
+        ok(!api.uploadButton.disabled && api.tmdbError.hidden);
         api.columns.value = '3';
         api.columns.dispatchEvent(new Event('change'));
         ok(api.uploadButton.disabled);
@@ -571,21 +772,42 @@ async function domTests(script, examples, pixhostHTML) {
         equal(api.state.job.public, false);
         const creation = calls.find(call => call.url.endsWith('/upload/comparison'));
         equal(creation.data.get('public'), 'false');
+        equal(creation.data.get('tmdbId'), 'MOVIE_123');
+        equal(api.state.job.tmdbId, 'MOVIE_123');
+        ok(api.tmdbInput.matches(':disabled') && api.tmdbType.matches(':disabled'));
         equal(api.state.job.title, 'My collection');
         ok(api.status.textContent.includes('incomplete'));
         api.resetButton.click();
         equal(api.state.job, null);
         ok(!api.settings.disabled);
-        (0, eval)(exposed);
+        api.tmdbType.value = 'TV';
+        api.tmdbType.dispatchEvent(new Event('change'));
+        api.tmdbInput.value = 'tv/123';
+        api.tmdbInput.dispatchEvent(new Event('input'));
+        calls.length = 0;
+        await api.run('upload');
+        equal(api.state.job.tmdbId, 'TV_123');
+        equal(calls.find(call => call.url.endsWith('/upload/comparison')).data.get('tmdbId'), 'TV_123');
+        api.resetButton.click();
+        api.tmdbInput.value = '';
+        api.tmdbInput.dispatchEvent(new Event('input'));
+        calls.length = 0;
+        await api.run('upload');
+        ok(!calls.find(call => call.url.endsWith('/upload/comparison')).data.has('tmdbId'));
+        api.resetButton.click();
+        launchFromMenu();
         equal(document.querySelectorAll('#comps-rehost-dialog').length, 1);
-        api.close();
+        api.dialog.querySelector('button[aria-label="Close"]').click();
+        equal(menus.size, 2);
         root.querySelector('img').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         equal(pageClicks, 1);
         root.remove();
         ok(!document.getElementById('comps-rehost-dialog'));
     });
     await test('Escape removes the picker and its temporary click listeners', () => {
-        (0, eval)(exposed);
+        launchFromMenu();
+        equal(savedSettings.get('tmdb_api_key'), 'test-key');
+        ok(!rehost.tmdbSearchSection.hidden);
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
         ok(!document.getElementById('comps-rehost-dialog'));
         const click = new MouseEvent('click', { bubbles: true, cancelable: true });
