@@ -9,8 +9,10 @@ This script targets **Chrome with Tampermonkey**. Use Tampermonkey **5.4.6226 or
 1. Right-click the page, then choose **Tampermonkey → comps-rehost**.
 2. Click the comparison area. The script suggests the nearest image section. Use **Expand to parent** for a larger block or **Choose another area** to pick again.
 3. Click images to toggle them, or click the first image and Shift-click the last to select an inclusive range in either direction. **Select all** and **Clear** are also available.
-4. Check the collection name, column names, and preview. Consecutive selected images form rows. A nearby `Source vs Encode` heading supplies names and column count; otherwise the defaults are two unnamed columns.
-5. Choose **Upload to slow.pics** or **Download originals**. Both actions require complete rows so every column has the same number of pictures. Collections are **public by default**; uncheck **Public on slow.pics** to request an unlisted collection.
+4. Check the collection name, column names, and preview. Consecutive selected images form rows. A nearby heading with names separated by `vs`, `|`, or repeated nonbreaking spaces (`&nbsp;`) supplies names and column count; otherwise the defaults are two unnamed columns. Single spaces within names, such as `Old GroupA`, are preserved.
+5. Choose **Upload to slow.pics** or **Download originals**. Both actions require complete rows so every column has the same number of pictures. Collections are **unlisted by default**; check **Public on slow.pics** to make a collection public.
+
+The collection name is suggested from the page title as `Movie Title Year Resolution - Source vs Encode` or `TV Title [Year] S01 Resolution - Source vs Encode`, using all current column names. Dot-separated titles are normalized, and alternate titles after `AKA` and release details are omitted. Unrecognized titles fall back to `Comparison - Source vs Encode`. The suggestion follows column edits until you edit the collection name yourself.
 
 There is no userscript execution before the context-menu command: no page scan, listener, cookie/storage access, or request. The userscript manager itself still needs site permissions. After invocation, thumbnail previews can load images. Original-image resolution and slow.pics requests start only when you choose an output action. Tampermonkey may ask to allow an unfamiliar image host.
 
@@ -36,8 +38,8 @@ The integration uses slow.pics' website upload endpoints, which can change. Auto
 
 ## Tests
 
-Run `node --test tests/*.test.cjs`. The comparison tests use an isolated headless Chrome profile and no additional packages. Set `CHROME_BIN` if Chrome is not in a standard location. HTTP(S) requests from the test page are blocked in Chrome, external fixture resources are also blocked by CSP, and transfer APIs are mocked. Sanitized examples are embedded in the tests; when `tmp/comp-examples/ex1.html` through `ex9.html` and `ex9_pixhost.html` are present, those samples are checked too. Browser tests are skipped when Chrome cannot be found.
+Run `npm ci`, then `npm test` (or `node --test tests/*.test.cjs`). Tests run entirely in Node using jsdom; no Chrome or other browser is launched. External resources are not loaded, and image decoding, dialogs, and transfer APIs are mocked. Sanitized examples are embedded in the tests; when `tmp/comp-examples/ex1.html` through `ex10.html` and `ex9_pixhost.html` are present, those samples are checked too.
 
-Before release, manually check the native Tampermonkey menu, absence of script activity before invocation, and an actual upload and download. Headless DOM tests do not verify userscript-manager permissions, browser-managed sessions, or the live slow.pics service.
+Before release, manually check the native Tampermonkey menu, absence of script activity before invocation, and an actual upload and download. Node DOM tests do not verify native image decoding, dialog behavior, userscript-manager permissions, browser-managed sessions, or the live slow.pics service.
 
 The original reference userscript and supplied HTML examples are kept locally in `tmp/`, which is ignored by Git.

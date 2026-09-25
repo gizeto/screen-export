@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         comps-rehost
 // @namespace    https://github.com/gizeto
-// @version      1.1.1
+// @version      1.1.2
 // @description  Select nearby comparison images, upload to slow.pics, or download originals on demand.
 // @author       gizeto
 // @match        http://*/*
@@ -137,11 +137,34 @@
     }
 
     function columnNames(text) {
-        let line = text.replace(/\s+/g, ' ').trim();
-        if (line.length > 300 || /https?:\/\/|\[\/?[a-z]+(?:=|\])/i.test(line)) return null;
+        // Collapse HTML source whitespace but preserve visible gaps made with &nbsp;.
+        let line = text.replace(/[ \t\r\n\f]+/g, ' ').trim();
+        if (line.replace(/\s+/g, ' ').length > 300 || /https?:\/\/|\[\/?[a-z]+(?:=|\])/i.test(line)) return null;
         line = line.replace(/^[\s=\[\]_-]+|[\s=\[\]_:-]+$/g, '');
-        const names = line.split(/\bvs\.?(?=\s|$)/i).map(name => name.trim());
+        let parts = line.split(/\bvs\.?(?=\s|$)|\|/i);
+        // A single nonbreaking space can belong to a multiword name.
+        if (parts.length === 1) parts = line.split(/[ \u00a0]*\u00a0[ \u00a0]*\u00a0[ \u00a0]*/);
+        const names = parts.map(name => name.replace(/\s+/g, ' ').trim());
         return names.length >= 2 && names.every(name => name && name.length <= 80) ? names : null;
+    }
+
+    function collectionName(pageTitle, labels) {
+        const normalized = pageTitle.replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
+        const resolution = /\b(?:480[pi]|576[pi]|720p|1080[pi]|2160p|4320p)\b/i.exec(normalized);
+        let base = 'Comparison';
+        if (resolution) {
+            const before = normalized.slice(0, resolution.index).trim();
+            const season = /\bS(\d{1,2})(?:E\d{1,3})?\b/i.exec(before);
+            const beforeSeason = season ? before.slice(0, season.index).trim() : before;
+            const year = [...beforeSeason.matchAll(/\b(?:19|20)\d{2}\b/g)].at(-1);
+            if (year || season) {
+                const name = beforeSeason.slice(0, year ? year.index : beforeSeason.length)
+                    .split(/\bAKA\b/i)[0].replace(/[\s([\]-]+$|^[\s[\]]+/g, '').trim();
+                if (name) base = [name, year?.[0], season && `S${season[1].padStart(2, '0')}`,
+                    resolution[0].toLowerCase()].filter(Boolean).join(' ');
+            }
+        }
+        return labels.length ? `${base} - ${labels.join(' vs ')}` : base;
     }
 
     function scan(root, target) {
@@ -510,7 +533,7 @@
     }
     const button = (text, click) => element('button', { type: 'button', textContent: text, onclick: click });
     const lifetime = new AbortController();
-    const state = { root: null, images: [], selected: new Set(), anchor: null, picker: null, active: null, job: null };
+    const state = { root: null, images: [], selected: new Set(), anchor: null, picker: null, active: null, job: null, customTitle: false };
     const host = element('div', { id: HOST_ID });
     const shadow = host.attachShadow({ mode: 'closed' });
     const style = element('style', { textContent: `
@@ -540,9 +563,10 @@
     const picker = element('div', { className: 'picker', hidden: true }, 'Click the comparison area. Escape cancels. ', button('Cancel', close));
     const dialog = element('dialog');
     const settings = element('fieldset');
-    const title = element('input', { value: 'Comparison', ariaLabel: 'Collection name' });
+    const title = element('input', { value: 'Comparison', ariaLabel: 'Collection name',
+        oninput: () => { state.customTitle = true; } });
     const columns = element('input', { type: 'number', min: '1', value: '2', ariaLabel: 'Number of columns' });
-    const publicInput = element('input', { type: 'checkbox', checked: true });
+    const publicInput = element('input', { type: 'checkbox', checked: false });
     const names = element('div', { className: 'controls names' });
     const scope = element('p');
     const candidates = element('div', { className: 'grid candidates' });
@@ -597,6 +621,7 @@
 
     function update() {
         const items = selectedImages(), labels = getNames(), n = countColumns();
+        if (!state.customTitle && !state.job) title.value = collectionName(document.title, labels);
         const busy = !!state.active;
         let namingError = '';
         try { fileColumns(labels); } catch (error) { namingError = error.message; }
@@ -727,7 +752,7 @@
         if (dialog.open) dialog.focus();
         else picker.querySelector('button').focus();
     }, { signal: lifetime.signal });
-    debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.1.0',
+    debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.1.2',
         manager: typeof GM_info === 'object' ? GM_info.scriptHandler : 'unknown',
         managerVersion: typeof GM_info === 'object' ? GM_info.version : 'unknown' });
     chooseArea();

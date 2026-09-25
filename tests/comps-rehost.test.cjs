@@ -1,16 +1,10 @@
 const assert = require('node:assert/strict');
-const { readFileSync, existsSync, mkdtempSync, rmSync } = require('node:fs');
+const { readFileSync, existsSync } = require('node:fs');
 const { join } = require('node:path');
-const { tmpdir } = require('node:os');
-const { spawn } = require('node:child_process');
+const { JSDOM, VirtualConsole } = require('jsdom');
 const { test } = require('node:test');
 
 const source = readFileSync(join(__dirname, '..', 'comps-rehost.user.js'), 'utf8');
-const chrome = process.env.CHROME_BIN || [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'
-].find(existsSync);
-
 test('metadata defers injection and requests no page-script or persistent-storage access', () => {
     assert.match(source, /@run-at\s+context-menu/);
     assert.match(source, /@sandbox\s+DOM/);
@@ -18,69 +12,23 @@ test('metadata defers injection and requests no page-script or persistent-storag
     assert.doesNotMatch(source, /MutationObserver|setInterval|GM_registerMenuCommand/);
 });
 
-// A real DOM and image decoder, without a browser automation dependency or the user's profile.
-async function inChrome(expression) {
-    const profile = mkdtempSync(join(tmpdir(), 'comps-rehost-test-'));
-    const child = spawn(chrome, ['--headless', '--disable-gpu', '--disable-background-networking',
-        '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
-        `--user-data-dir=${profile}`, 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
-    let socket;
-    const pending = new Map();
+// DOM behavior runs entirely in Node; jsdom does not load external resources.
+async function inDOM(expression) {
+    const dom = new JSDOM('<!doctype html><body></body>', {
+        url: 'https://fixture.test/details', runScripts: 'outside-only', virtualConsole: new VirtualConsole()
+    });
+    Object.assign(dom.window, { Blob, FormData });
+    // jsdom has no native dialog implementation or image decoder.
+    dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+    dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
     try {
-        const endpoint = await new Promise((resolve, reject) => {
-            let log = '';
-            const timer = setTimeout(() => reject(new Error(`Chrome did not start: ${log.slice(-1000)}`)), 20000);
-            child.once('error', error => { clearTimeout(timer); reject(error); });
-            child.once('exit', (code, signal) => { clearTimeout(timer); reject(new Error(`Chrome exited: ${code || signal}. Browser execution may need sandbox permission.`)); });
-            child.stderr.on('data', chunk => {
-                log += chunk;
-                const url = log.match(/DevTools listening on (ws:\/\/\S+)/)?.[1];
-                if (url) { clearTimeout(timer); resolve(url); }
-            });
-        });
-        socket = new WebSocket(endpoint);
-        await new Promise((resolve, reject) => {
-            socket.addEventListener('open', resolve, { once: true });
-            socket.addEventListener('error', reject, { once: true });
-        });
-        let id = 0;
-        socket.addEventListener('message', event => {
-            const message = JSON.parse(event.data);
-            const callback = pending.get(message.id);
-            if (callback) { pending.delete(message.id); callback(message); }
-        });
-        const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
-            const current = ++id;
-            const timer = setTimeout(() => { pending.delete(current); reject(new Error(`CDP timed out: ${method}`)); }, 30000);
-            pending.set(current, message => {
-                clearTimeout(timer);
-                if (message.error) reject(new Error(message.error.message));
-                else resolve(message.result);
-            });
-            socket.send(JSON.stringify({ id: current, method, params, sessionId }));
-        });
-        const { targetId } = await call('Target.createTarget', { url: 'about:blank' });
-        const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true });
-        await call('Page.enable', {}, sessionId);
-        await call('Network.enable', {}, sessionId);
-        await call('Network.setBlockedURLs', { urls: ['http://*', 'https://*'] }, sessionId);
-        const { frameTree } = await call('Page.getFrameTree', {}, sessionId);
-        await call('Page.setDocumentContent', { frameId: frameTree.frame.id, html: `<!doctype html>
-            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:">
-            <base href="https://fixture.test/details"><body></body>` }, sessionId);
-        const result = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
-        if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-        return result.result.value;
+        return await dom.window.eval(expression);
     } finally {
-        socket?.close();
-        try { process.kill(-child.pid, 'SIGTERM'); } catch { /* Already exited. */ }
-        child.stderr.destroy();
-        child.unref();
-        rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        dom.window.close();
     }
 }
 
-async function browserTests(script, examples, pixhostHTML) {
+async function domTests(script, examples, pixhostHTML) {
     const results = [];
     // Read the configured image host without duplicating its domain in fixtures.
     const imageHostDomain = script.match(/https:\/\/img\.([^/]+)\/getimg\//)[1];
@@ -117,7 +65,7 @@ async function browserTests(script, examples, pixhostHTML) {
             selectRange, fetchOriginal, imageFile, request, upload, download, filename, slowToken, state,
             showArea, chooseArea, expandArea, close, dialog, picker, candidates, columns, names,
             uploadButton, downloadButton, summary, settings, preview, run, status, resetButton, result, browserID,
-            diagnostics, retryAfter, slowRequest, fileColumns };
+            diagnostics, retryAfter, slowRequest, fileColumns, collectionName, title, publicInput };
         chooseArea();
     })();`);
     await test('activation installs only the picker, without resolving images or accessing cookies', () => {
@@ -140,13 +88,79 @@ async function browserTests(script, examples, pixhostHTML) {
         return root;
     };
     const img = (id, attributes = '') => `<a href="https://images.test/${id}.png"><img src="https://images.test/${id}.png" ${attributes}></a>`;
+    await test('collection titles keep movie/year/season/resolution and omit alternate titles and release details', () => {
+        const cases = [
+            ['Hot Dog 2018 1080p BluRay DTS x264-GroupName :: SITE', 'Hot Dog 2018 1080p'],
+            ['Stuck 2017 1080p AMZN WEB-DL DD+ 2.0 H.264-GroupName - site.cc', 'Stuck 2017 1080p'],
+            ['Notting.Hill.1999.1080p.WEBRip.DD+7.1.x264-GroupName :: Site', 'Notting Hill 1999 1080p'],
+            ['The Three Deaths of Marisela Escobedo AKA Las tres muertes de Marisela Escobedo 2020 SPANISH 2160p NF WEB-DL DD+ 5.1 H.265-GroupName - Torrents - Site',
+                'The Three Deaths of Marisela Escobedo 2020 2160p'],
+            ['Age Inappropriate 2026 S01 1080p AMZN WEB-DL DD+ 2.0 H.264-GroupName - Torrents - Site', 'Age Inappropriate 2026 S01 1080p'],
+            ['Example.Show.S02E03.720p.WEB-DL-GroupName :: Site', 'Example Show S02 720p'],
+            ['2001 A Space Odyssey 1968 1080p BluRay-GroupName', '2001 A Space Odyssey 1968 1080p'],
+            ['Example Film (2020) 2160p WEB-DL-GroupName', 'Example Film 2020 2160p'],
+            ['', 'Comparison'], ['Site :: Browse torrents', 'Comparison'], ['1080p releases', 'Comparison']
+        ];
+        for (const [input, expected] of cases) {
+            equal(api.collectionName(input, ['GroupA', 'GroupB']), `${expected} - GroupA vs GroupB`);
+        }
+        equal(api.collectionName(cases[0][0], ['Source', 'Filtered Source', 'Encode']),
+            'Hot Dog 2018 1080p - Source vs Filtered Source vs Encode');
+    });
+    await test('pipe headings handle inline markup, multiword columns and section boundaries like ex10', () => {
+        equal(api.columnNames('Source|Encode'), ['Source', 'Encode']);
+        equal(api.columnNames('Source | '), null);
+        equal(api.columnNames('Source || Encode'), null);
+        equal(api.columnNames('Source | https://images.test/a.png'), null);
+        const root = fixture(`<div align="center"><strong>Source <span>|</span> Encode</strong>
+            ${Array.from({ length: 28 }, (_, i) => img(`pipe-${i}`)).join(' ')}
+            <br><strong>Old GroupA | GroupB | GroupC</strong>${img('x')}${img('y')}${img('z')}</div>`);
+        const images = [...root.querySelectorAll('img')];
+        for (const image of images.slice(0, 28)) {
+            const area = api.detect(image);
+            equal(area.names, ['Source', 'Encode']);
+            equal(area.images.length, 28);
+        }
+        const second = api.detect(images[28]);
+        equal(second.names, ['Old GroupA', 'GroupB', 'GroupC']);
+        equal(second.images.length, 3);
+    });
     await test('heading parsing handles inline vs, punctuation and decoration, and rejects prose URLs/BBCode', () => {
-        equal(api.columnNames('ProRes vs. Filtered Source vs. Encode vs. DON vs. EbP vs. leverage'), ['ProRes', 'Filtered Source', 'Encode', 'DON', 'EbP', 'leverage']);
-        equal(api.columnNames('========== [FraMeSToR vs j3rico] =========='), ['FraMeSToR', 'j3rico']);
+        equal(api.columnNames('ProRes vs. Filtered Source vs. Encode vs. GroupA vs. GroupB vs. GroupC'), ['ProRes', 'Filtered Source', 'Encode', 'GroupA', 'GroupB', 'GroupC']);
+        equal(api.columnNames('========== [GroupA vs GroupB] =========='), ['GroupA', 'GroupB']);
         equal(api.columnNames(' SOURCE vs ENCODE : '), ['SOURCE', 'ENCODE']);
         equal(api.columnNames('AUS vs FRA: https://slow.pics/c/example'), null);
         equal(api.columnNames('[color=red]SOURCE[/color] vs ENCODE'), null);
         equal(api.columnNames('SOURCE vs '), null);
+    });
+    await test('spaced headings preserve multiword names and distinguish visible gaps from source whitespace', () => {
+        equal(api.columnNames('SOURCE \u00a0 \u00a0 SOURCE(FEL) \u00a0 \u00a0 GroupA \u00a0 \u00a0 OLD GroupA'),
+            ['SOURCE', 'SOURCE(FEL)', 'GroupA', 'OLD GroupA']);
+        equal(api.columnNames('Filtered\u00a0Source\u00a0\u00a0Encode'), ['Filtered Source', 'Encode']);
+        equal(api.columnNames('  Source\n    Encode  '), null);
+        equal(api.columnNames('SOURCE    SOURCE(FEL)    GroupA'), null);
+        equal(api.columnNames('MORE SCREENSHOTS'), null);
+        equal(api.columnNames('Source\u00a0Encode'), null);
+        equal(api.columnNames('Source \u00a0 \u00a0 vs \u00a0 \u00a0 Encode'), ['Source', 'Encode']);
+        equal(api.columnNames('Source\u00a0\u00a0https://images.test/a.png'), null);
+        equal(api.columnNames('[color=red]SOURCE[/color]\u00a0\u00a0ENCODE'), null);
+    });
+    await test('nonbreaking-space headings split comparison sections and detect all four columns', () => {
+        const gap = ' &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; ';
+        const root = fixture(`<center><font size="2"><br>
+            <b>SOURCE${gap}<span>SOURCE(FEL)</span>${gap}GroupA${gap}GroupB</b><br><br>
+            ${Array.from({ length: 8 }, (_, i) => img(`first-${i}`)).join(' ')}<br><br>
+            MORE SCREENSHOTS<br><br>
+            <b>SOURCE${gap}SOURCE(FEL)${gap}GroupA${gap}OLD GroupA</b><br><br>
+            ${Array.from({ length: 4 }, (_, i) => img(`second-${i}`)).join(' ')}<br>
+            </font></center>`);
+        const images = [...root.querySelectorAll('img')];
+        for (let i = 0; i < images.length; i++) {
+            const area = api.detect(images[i]);
+            equal(area.names, ['SOURCE', 'SOURCE(FEL)', 'GroupA', i < 8 ? 'GroupB' : 'OLD GroupA']);
+            equal(area.images.map(item => item.source), images.slice(i < 8 ? 0 : 8, i < 8 ? 8 : 12).map(image => image.src));
+        }
+        equal(calls.length, 0);
     });
     await test('section detection splits repeated headings and preserves duplicate image occurrences', () => {
         const root = fixture(`<section><b>Source <span>vs.</span> Encode</b><br>${img('same')}${img('same')}<br>
@@ -195,10 +209,15 @@ async function browserTests(script, examples, pixhostHTML) {
                 equal(api.detect(groups[0].querySelector('img')).names, ['Source', 'Filtered', 'Encode']);
             } else if (name === 'ex9') {
                 const area = api.detect(find('t3.pixhost.cc'));
-                equal(area.images.length, 32);
-                equal(area.names, []);
+                equal(area.images.length, 20);
+                equal(area.names.slice(0, 2), ['SOURCE', 'SOURCE(FEL)']);
+                equal(area.names.length, 4);
                 equal(area.images[0].link, 'https://pixhost.cc/show/5385/764953339_1-source-040774.png');
                 equal(area.images[0].source, 'https://t3.pixhost.cc/thumbs/5385/764953339_1-source-040774.png');
+                const second = api.detect(find('764954444_'));
+                equal(second.images.length, 12);
+                equal(second.names.slice(0, 2), ['SOURCE', 'SOURCE(FEL)']);
+                equal(second.names.length, 4);
             } else if (name === 'ex3' || name === 'ex7') {
                 const area = api.detect(name === 'ex3' ? find('Nightcrawler') : find('screenshots/'));
                 equal(area.images.length, name === 'ex3' ? 14 : 16);
@@ -206,7 +225,7 @@ async function browserTests(script, examples, pixhostHTML) {
             } else if (name === 'ex4') {
                 const groups = root.querySelectorAll('.comparison');
                 equal([...groups].map(group => api.detect(group.querySelector('button')).images.length), [30, 30, 30]);
-                equal(api.detect(groups[0].querySelector('button')).names, ['AMZN TrollHD', 'DSNP playWEB']);
+                equal(api.detect(groups[0].querySelector('button')).names.length, 2);
             } else if (name === 'ex5') {
                 const area = api.detect(find('img4k.net'));
                 equal(area.images.filter(item => item.link).length, 12);
@@ -215,10 +234,14 @@ async function browserTests(script, examples, pixhostHTML) {
                 const area = api.detect(find('img4k.net'));
                 equal(area.images.length, 12);
                 equal(area.names, ['SOURCE', 'ENCODE']);
+            } else if (name === 'ex10') {
+                const area = api.detect(images[0]);
+                equal(area.images.length, 28);
+                equal(area.names, ['Source', 'Encode']);
             } else if (name === 'ex8') {
                 const area = api.detect(find('i.ibb.co'));
                 equal(area.images.length, 16);
-                equal(area.names, ['FraMeSToR', 'j3rico']);
+                equal(area.names.length, 2);
             }
         });
     }
@@ -244,10 +267,13 @@ async function browserTests(script, examples, pixhostHTML) {
         equal(api.httpURL('https://user:password@example.test/image.png'), '');
         ok(/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/.test(api.browserID()));
     });
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 2;
-    canvas.getContext('2d').fillRect(0, 0, 2, 2);
-    const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    const pngBytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='), char => char.charCodeAt(0));
+    const png = new Blob([pngBytes], { type: 'image/png' });
+    // Accept only the known fixture; decoder failures test the script's error handling.
+    globalThis.createImageBitmap = async blob => {
+        equal([...new Uint8Array(await blob.arrayBuffer())], [...pngBytes]);
+        return { close() {} };
+    };
     const imageResponse = () => ({ response: png });
     await test('Pixhost thumbnail-only images resolve across domains and server numbers without fetching thumbnails', async () => {
         for (const [domain, server] of [['pixhost.cc', '3'], ['pixhost.to', '97'], ['pixho.st', '12']]) {
@@ -499,6 +525,7 @@ async function browserTests(script, examples, pixhostHTML) {
         ok(messages.at(-1).startsWith('Cancelled — 1 saved, 0 failed, 1 not completed.'));
     });
     await test('picker suppresses site clicks, selection updates the grid and incomplete rows block both outputs', async () => {
+        document.title = 'Hot Dog 2018 1080p BluRay DTS x264-GroupName :: SITE';
         const root = fixture(`<div><b>Source vs Encode</b><br>${img('a')}${img('b')}${img('c')}${img('d')}</div>`);
         document.body.append(root);
         let pageClicks = 0;
@@ -507,6 +534,11 @@ async function browserTests(script, examples, pixhostHTML) {
         equal(pageClicks, 0);
         equal(api.state.images.length, 4);
         equal(api.state.selected.size, 0);
+        equal(api.publicInput.checked, false);
+        equal(api.title.value, 'Hot Dog 2018 1080p - Source vs Encode');
+        api.names.children[1].value = 'GroupB';
+        api.names.children[1].dispatchEvent(new Event('input'));
+        equal(api.title.value, 'Hot Dog 2018 1080p - Source vs GroupB');
         ok(api.dialog.open && api.picker.hidden);
         api.candidates.children[0].click();
         api.candidates.children[3].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
@@ -519,9 +551,14 @@ async function browserTests(script, examples, pixhostHTML) {
         ok(api.downloadButton.disabled);
         ok(api.summary.textContent.includes('incomplete'));
         equal(api.names.children.length, 3);
+        equal(api.title.value, 'Hot Dog 2018 1080p - Source vs GroupB vs Column 3');
+        api.title.value = 'My collection';
+        api.title.dispatchEvent(new Event('input'));
         // A failed upload must lock its mapping until resumed or explicitly reset.
         api.columns.value = '2';
         api.columns.dispatchEvent(new Event('change'));
+        equal(api.title.value, 'My collection');
+        calls.length = 0;
         handler = options => options.url.endsWith('/comparison') && options.method === 'GET'
             ? { responseHeaders: 'Set-Cookie: XSRF-TOKEN=token;' }
             : options.url.endsWith('/upload/comparison')
@@ -531,6 +568,10 @@ async function browserTests(script, examples, pixhostHTML) {
         ok(api.settings.disabled);
         equal(api.uploadButton.textContent, 'Retry upload');
         ok(api.state.job.collection);
+        equal(api.state.job.public, false);
+        const creation = calls.find(call => call.url.endsWith('/upload/comparison'));
+        equal(creation.data.get('public'), 'false');
+        equal(api.state.job.title, 'My collection');
         ok(api.status.textContent.includes('incomplete'));
         api.resetButton.click();
         equal(api.state.job, null);
@@ -554,15 +595,15 @@ async function browserTests(script, examples, pixhostHTML) {
     return results;
 }
 
-test('comparison behavior in isolated Chrome', { skip: !chrome && 'Set CHROME_BIN to run real-browser regression tests', timeout: 60000 }, async t => {
+test('comparison behavior in Node DOM', { timeout: 60000 }, async t => {
     const examples = {};
-    for (let i = 1; i <= 9; i++) {
+    for (let i = 1; i <= 10; i++) {
         const path = join(__dirname, '..', 'tmp', 'comp-examples', `ex${i}.html`);
         if (existsSync(path)) examples[`ex${i}`] = readFileSync(path, 'utf8');
     }
     const pixhostPath = join(__dirname, '..', 'tmp', 'comp-examples', 'ex9_pixhost.html');
     const pixhostHTML = existsSync(pixhostPath) ? readFileSync(pixhostPath, 'utf8') : '';
-    const results = await inChrome(`(${browserTests.toString()})(${JSON.stringify(source)}, ${JSON.stringify(examples)}, ${JSON.stringify(pixhostHTML)})`);
+    const results = await inDOM(`(${domTests.toString()})(${JSON.stringify(source)}, ${JSON.stringify(examples)}, ${JSON.stringify(pixhostHTML)})`);
     for (const result of results) {
         await t.test(result.name, () => assert.equal(result.ok, true, result.error));
     }
