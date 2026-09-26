@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         comps-rehost
 // @namespace    https://github.com/gizeto
-// @version      1.1.7
+// @version      1.1.8
 // @description  Select nearby comparison images, upload to slow.pics, or download originals on demand.
 // @author       gizeto
 // @match        http://*/*
@@ -192,6 +192,11 @@
                 }
             }
             return labels.length ? `${base} - ${labels.join(' vs ')}` : base;
+        }
+
+        function suggestedMediaType(pageTitle) {
+            const normalized = pageTitle.replace(/[._]/g, ' ');
+            return /\b(?:S\d{1,2}(?:E\d{1,3})?|\d{1,2}x\d{2,3}|Season\s+\d{1,2}|Episode\s+\d{1,3})\b/i.test(normalized) ? 'TV' : 'MOVIE';
         }
 
         function scan(root, target) {
@@ -476,8 +481,26 @@
             return data.results.filter(item => item && Number.isSafeInteger(item.id) && item.id > 0
                 && typeof (type === 'MOVIE' ? item.title : item.name) === 'string').map(item => ({
                 id: String(item.id), title: type === 'MOVIE' ? item.title : item.name,
-                year: String((type === 'MOVIE' ? item.release_date : item.first_air_date) || '').match(/^\d{4}/)?.[0] || 'Unknown year'
+                year: String((type === 'MOVIE' ? item.release_date : item.first_air_date) || '').match(/^\d{4}/)?.[0] || 'Unknown year',
+                countries: Array.isArray(item.origin_country) ? item.origin_country.filter(code => typeof code === 'string' && /^[A-Z]{2}$/.test(code)) : [],
+                poster: typeof item.poster_path === 'string' && /^\/[\w-]+\.(?:jpg|png|webp)$/i.test(item.poster_path)
+                    ? `https://image.tmdb.org/t/p/w92${item.poster_path}` : ''
             }));
+        }
+
+        function countryNames(codes) {
+            const regions = new Intl.DisplayNames(['en'], { type: 'region' });
+            return codes.map(code => regions.of(code)).join(', ') || 'Unknown country';
+        }
+
+        async function movieCountries(id, apiKey, signal) {
+            const url = new URL(`https://api.themoviedb.org/3/movie/${id}`);
+            url.searchParams.set('api_key', apiKey);
+            const response = await request(url.href, { headers: { Accept: 'application/json' }, anonymous: true }, signal);
+            const data = JSON.parse(response.responseText);
+            const codes = Array.isArray(data.origin_country) && data.origin_country.length ? data.origin_country
+                : (Array.isArray(data.production_countries) ? data.production_countries.map(country => country?.iso_3166_1) : []);
+            return codes.filter(code => typeof code === 'string' && /^[A-Z]{2}$/.test(code));
         }
 
         function comparisonFields(job) {
@@ -634,6 +657,16 @@
             .help-text { display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 2; width: min(320px, 70vw); padding: 8px 10px; border: 1px solid #7d8796; border-radius: 4px; background: #303640; box-shadow: 0 2px 8px #0006; }
             .help:hover .help-text, .help:focus-within .help-text { display: block; }
             .names input { width: 155px; }
+            .tmdb-dropdown { position: relative; width: 480px; max-width: 100%; }
+            .tmdb-trigger { width: 100%; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+            .tmdb-results { position: absolute; top: 100%; left: 0; z-index: 3; width: 100%; height: 280px; overflow-y: auto; overscroll-behavior: contain; background: #202329; border: 1px solid #7d8796; border-radius: 4px; }
+            .tmdb-option { display: flex; align-items: center; gap: 10px; width: 100%; height: 92px; text-align: left; border: 0; border-radius: 0; }
+            .tmdb-option[aria-selected=true] { background: #294c70; }
+            .tmdb-poster { flex: 0 0 48px; width: 48px; height: 72px; display: flex; align-items: center; justify-content: center; font-size: 11px; text-align: center; background: #111; }
+            .tmdb-poster img { width: 48px; height: 72px; object-fit: cover; }
+            .tmdb-description { min-width: 0; }
+            .tmdb-description span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+            .tmdb-country { font-size: 12px; color: #c4cbd6; }
             .grid { display: grid; gap: 8px; margin-bottom: 14px; }
             .candidates { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); max-height: 35vh; overflow: auto; }
             .image { min-width: 0; padding: 4px; } .image[aria-pressed=true] { border: 2px solid #76bcff; background: #294c70; }
@@ -649,6 +682,9 @@
         const title = element('input', { value: 'Comparison', ariaLabel: 'Collection name',
             oninput: () => { state.customTitle = true; } });
         const columns = element('input', { type: 'number', min: '1', value: '2', ariaLabel: 'Number of columns' });
+        const imageOrder = element('select', { ariaLabel: 'Image order', onchange: update },
+            element('option', { value: 'rows', textContent: 'Row by row' }),
+            element('option', { value: 'columns', textContent: 'Column by column' }));
         const publicInput = element('input', { type: 'checkbox', checked: false });
         const storedTMDBKey = GM_getValue('tmdb_api_key', '');
         let tmdbAPIKey = typeof storedTMDBKey === 'string' ? storedTMDBKey.trim() : '';
@@ -657,20 +693,41 @@
             tmdbInput.value = ''; resetTMDBResults(); update();
         } },
             element('option', { value: 'MOVIE', textContent: 'Movie' }), element('option', { value: 'TV', textContent: 'TV' }));
+        tmdbType.value = suggestedMediaType(document.title);
         const tmdbInput = element('input', { type: 'text', placeholder: 'tv/124 or movie/567',
-                ariaLabel: 'TMDB id', oninput: () => { tmdbResults.value = ''; update(); } });
+                ariaLabel: 'TMDB id', oninput: () => { clearTMDBSelection(); update(); } });
         const suggestedTitle = collectionName(document.title, []).replace(/(?:\s+(?:19|20)\d{2})?(?:\s+S\d+)?\s+\d+[pi]$/, '');
         const tmdbQuery = element('input', { ariaLabel: 'Search TMDB by title', placeholder: 'Movie or TV title',
             value: suggestedTitle === 'Comparison' ? '' : suggestedTitle, oninput: resetTMDBResults,
             onkeydown: event => { if (event.key === 'Enter') { event.preventDefault(); findTMDB(); } } });
         const tmdbSearchButton = button('Search TMDB', findTMDB);
-        const tmdbResults = element('select', { ariaLabel: 'TMDB search results', disabled: true, onchange: () => {
-            tmdbInput.value = tmdbResults.value ? `${tmdbType.value.toLowerCase()}/${tmdbResults.value}` : ''; update();
-        } }, element('option', { value: '', textContent: 'Search for a title above' }));
+        const tmdbResults = element('div', { id: 'tmdb-results', className: 'tmdb-results', role: 'listbox', ariaLabel: 'TMDB search results', hidden: true });
+        const tmdbResultsButton = button('Search for a title above', () => {
+            setTMDBResultsOpen(tmdbResults.hidden);
+            if (!tmdbResults.hidden) (tmdbResults.querySelector('[aria-selected=true]') || tmdbResults.firstElementChild)?.focus();
+        });
+        tmdbResultsButton.className = 'tmdb-trigger';
+        tmdbResultsButton.disabled = true;
+        tmdbResultsButton.setAttribute('aria-haspopup', 'listbox');
+        tmdbResultsButton.setAttribute('aria-controls', tmdbResults.id);
+        tmdbResultsButton.setAttribute('aria-expanded', 'false');
+        const tmdbDropdown = element('div', { className: 'tmdb-dropdown', onfocusout: event => {
+            if (!tmdbDropdown.contains(event.relatedTarget)) setTMDBResultsOpen(false);
+        }, onkeydown: event => {
+            const options = [...tmdbResults.children];
+            if (!options.length || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            setTMDBResultsOpen(true);
+            const index = options.indexOf(event.target);
+            const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1
+                : index < 0 ? (event.key === 'ArrowDown' ? 0 : options.length - 1)
+                : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+            options[next].focus();
+        } }, tmdbResultsButton, tmdbResults);
         const tmdbSearchStatus = element('p', { role: 'status' });
         const tmdbSearchSection = element('div', { hidden: !tmdbAPIKey },
             element('div', { className: 'controls' }, element('label', {}, 'Search for ', tmdbType), tmdbQuery, tmdbSearchButton),
-            element('div', { className: 'controls' }, element('label', {}, 'Search results ', tmdbResults)), tmdbSearchStatus);
+            element('div', { className: 'controls' }, element('span', { textContent: 'Search results' }), tmdbDropdown), tmdbSearchStatus);
         const tmdbSearchHint = hint('tmdb-search-help', 'TMDB search help',
             'Set the TMDB API key from the Tampermonkey menu to enable title search, or enter a TMDB id manually.');
         tmdbSearchHint.hidden = !!tmdbAPIKey;
@@ -703,12 +760,11 @@
                 element('label', {}, 'Columns ', columns), element('label', {}, publicInput, ' Public on slow.pics')),
             tmdbSearchSection,
             element('div', { className: 'controls help-controls' }, element('label', {}, 'TMDB id ', tmdbInput), tmdbSearchHint),
-            element('p', { textContent: 'Choose a search result or enter tv/124 or movie/567 manually. Leave blank for no link. Manual references need no API key.' }),
             tmdbError, names,
-            element('div', { className: 'controls help-controls' }, button('Select all', () => {
+            element('div', { className: 'controls help-controls' }, element('label', {}, 'Image order ', imageOrder), button('Select all', () => {
                 state.selected = new Set(state.images.map((_, i) => i)); state.anchor = null; update();
             }), button('Clear', () => { state.selected.clear(); state.anchor = null; update(); }),
-                hint('image-selection-help', 'Image selection help', 'Click to toggle · Shift-click to select a range · Consecutive images form each row.')), candidates);
+                hint('image-selection-help', 'Image selection help', 'Click to toggle · Shift-click to select a range · Image order follows the selected images on the page: row by row, or all of column 1, then column 2, etc.')), candidates);
         dialog.append(element('div', { className: 'dialog-header' }, element('h2', { textContent: 'Comparison images' }),
             element('button', { type: 'button', className: 'close', textContent: '×', ariaLabel: 'Close', title: 'Close', onclick: close })),
             settings, summary, element('div', { className: 'preview' }, preview),
@@ -719,7 +775,13 @@
 
         function countColumns() { return Math.max(1, Math.min(state.images.length || 2, Math.floor(Number(columns.value)) || 2)); }
         function getNames() { return [...names.children].map((input, i) => input.value.trim() || `Column ${i + 1}`); }
-        function selectedImages() { return state.images.filter((_, i) => state.selected.has(i)); }
+        function selectedImages() {
+            const items = state.images.filter((_, i) => state.selected.has(i));
+            const n = countColumns();
+            if (imageOrder.value !== 'columns' || items.length % n) return items;
+            const rows = items.length / n;
+            return items.map((_, i) => items[(i % n) * rows + Math.floor(i / n)]);
+        }
 
         refreshOpenSettings = () => {
             const storedKey = GM_getValue('tmdb_api_key', '');
@@ -735,10 +797,22 @@
             tmdbSearchButton.disabled = !tmdbAPIKey;
         }
 
+        function setTMDBResultsOpen(open) {
+            tmdbResults.hidden = !open;
+            tmdbResultsButton.setAttribute('aria-expanded', String(open));
+        }
+
+        function clearTMDBSelection() {
+            for (const option of tmdbResults.children) option.setAttribute('aria-selected', 'false');
+            tmdbResultsButton.textContent = tmdbResults.children.length ? 'Choose a result…' : 'Search for a title above';
+        }
+
         function resetTMDBResults() {
             cancelTMDBSearch();
-            tmdbResults.replaceChildren(element('option', { value: '', textContent: 'Search for a title above' }));
-            tmdbResults.disabled = true;
+            setTMDBResultsOpen(false);
+            tmdbResults.replaceChildren();
+            clearTMDBSelection();
+            tmdbResultsButton.disabled = true;
             tmdbSearchStatus.textContent = '';
         }
 
@@ -750,12 +824,52 @@
             tmdbSearchButton.disabled = true;
             tmdbSearchStatus.textContent = 'Searching TMDB…';
             try {
-                const matches = await searchTMDB(tmdbType.value, tmdbQuery.value, tmdbAPIKey, controller.signal);
+                const type = tmdbType.value;
+                const matches = await searchTMDB(type, tmdbQuery.value, tmdbAPIKey, controller.signal);
                 if (tmdbSearchController !== controller || !host.isConnected) return;
-                tmdbResults.replaceChildren(element('option', { value: '', textContent: 'Choose a result…' }),
-                    ...matches.map(item => element('option', { value: item.id, textContent: `${item.title} (${item.year}) · ID ${item.id}` })));
-                tmdbResults.disabled = !matches.length;
-                tmdbSearchStatus.textContent = matches.length ? 'Choose a result to link it. Refine the title and search again if needed.' : 'No matches. Try another title.';
+                const countryLabels = [];
+                tmdbResults.replaceChildren(...matches.map(item => {
+                    const label = `${item.title} (${item.year}) · ID ${item.id}`;
+                    const country = element('span', { className: 'tmdb-country', textContent: countryNames(item.countries) });
+                    country.title = country.textContent;
+                    countryLabels.push(country);
+                    const poster = element('span', { className: 'tmdb-poster', textContent: 'No poster' });
+                    if (item.poster) poster.replaceChildren(element('img', { src: item.poster, alt: '', loading: 'lazy', referrerPolicy: 'no-referrer',
+                        onerror: () => { poster.textContent = 'No poster'; } }));
+                    const option = button('', () => {
+                        if (state.active || state.job) return;
+                        clearTMDBSelection();
+                        option.setAttribute('aria-selected', 'true');
+                        tmdbResultsButton.textContent = label;
+                        tmdbInput.value = `${type.toLowerCase()}/${item.id}`;
+                        setTMDBResultsOpen(false);
+                        tmdbResultsButton.focus();
+                        update();
+                    });
+                    Object.assign(option, { className: 'tmdb-option', role: 'option', tabIndex: -1, title: label });
+                    option.setAttribute('aria-selected', 'false');
+                    option.append(poster, element('span', { className: 'tmdb-description' }, element('span', { textContent: label }), country));
+                    return option;
+                }));
+                clearTMDBSelection();
+                tmdbResultsButton.disabled = !matches.length;
+                tmdbSearchButton.disabled = false;
+                tmdbSearchStatus.textContent = matches.length ? '' : 'No matches. Try another title.';
+                // Movie search omits countries. Show matches immediately, then fill in their countries.
+                if (type === 'MOVIE') {
+                    for (let i = 0; i < matches.length; i++) {
+                        if (matches[i].countries.length) continue;
+                        try {
+                            const codes = await movieCountries(matches[i].id, tmdbAPIKey, controller.signal);
+                            if (tmdbSearchController !== controller || !host.isConnected) return;
+                            countryLabels[i].textContent = countryNames(codes);
+                            countryLabels[i].title = countryLabels[i].textContent;
+                        } catch (error) {
+                            if (error.name === 'AbortError') return;
+                            if (error.stopTransfer || error.status === 401) break;
+                        }
+                    }
+                }
             } catch (error) {
                 if (tmdbSearchController === controller && host.isConnected && error.name !== 'AbortError') tmdbSearchStatus.textContent = error.message;
             } finally {
@@ -870,6 +984,7 @@
             }
             catch (error) { status.textContent = error.message; return; }
             if (tmdbSearchController) resetTMDBResults();
+            setTMDBResultsOpen(false);
             const controller = new AbortController();
             state.active = controller;
             if (kind === 'upload') result.replaceChildren();
@@ -916,13 +1031,17 @@
         columns.addEventListener('change', () => { updateNames(); update(); });
         dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
         window.addEventListener('keydown', event => {
-            if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(); }
+            if (event.key === 'Escape') {
+                event.preventDefault(); event.stopImmediatePropagation();
+                if (!tmdbResults.hidden) { setTMDBResultsOpen(false); tmdbResultsButton.focus(); }
+                else close();
+            }
         }, { capture: true, signal: lifetime.signal });
         host.addEventListener('comps-rehost-focus', () => {
             if (dialog.open) dialog.focus();
             else picker.querySelector('button').focus();
         }, { signal: lifetime.signal });
-        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.1.7',
+        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.1.8',
             manager: typeof GM_info === 'object' ? GM_info.scriptHandler : 'unknown',
             managerVersion: typeof GM_info === 'object' ? GM_info.version : 'unknown' });
         chooseArea();
