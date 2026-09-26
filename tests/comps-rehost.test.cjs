@@ -62,7 +62,7 @@ async function domTests(script, examples, pixhostHTML) {
     };
     globalThis.prompt = (message, value) => { prompts.push({ message, value }); return promptValue; };
     globalThis.alert = message => alerts.push(message);
-    const keyMenu = () => [...menus.values()].find(menu => menu.label.startsWith('⚙ TMDB API key:'));
+    const keyMenu = () => [...menus.values()].find(menu => menu.label.startsWith('TMDB API key:'));
     const configureKey = value => { promptValue = value; keyMenu().callback(); };
     const launchFromMenu = () => [...menus.values()].find(menu => menu.label === 'Select comparison images').callback();
     let handler = () => { throw new Error('Unexpected request'); };
@@ -88,7 +88,9 @@ async function domTests(script, examples, pixhostHTML) {
             diagnostics, retryAfter, slowRequest, fileColumns, collectionName, title, publicInput,
             tmdbReference, comparisonFields, tmdbType, tmdbInput, tmdbError, searchTMDB, findTMDB,
             tmdbQuery, tmdbSearchSection, tmdbSearchHint, imageOrder, selectedImages, suggestedMediaType,
-            tmdbResults, tmdbResultsButton, tmdbSearchButton, tmdbSearchStatus };
+            tmdbResults, tmdbResultsButton, tmdbSearchButton, tmdbSearchStatus,
+            destination, nsfw, width, widthError, bbcode, copyBBCode, renderImageResults, imageBBCode,
+            imageUploadResult, uploadImage, uploadImages, hostKey, update };
         chooseArea();
     }
     })();`);
@@ -97,20 +99,20 @@ async function domTests(script, examples, pixhostHTML) {
         (0, eval)(exposed);
         equal(document.documentElement.innerHTML, before);
         equal(calls.length, 0);
-        equal([...menus.values()].map(menu => menu.label), ['Select comparison images', '⚙ TMDB API key: not set']);
+        equal([...menus.values()].map(menu => menu.label), ['Select comparison images', 'TMDB API key: not set', 'PTScreens API key: not set', 'ImgBB API key: not set']);
         equal([...savedSettings], []);
     });
     await test('TMDB menu configures the key before launching and updates its status without duplicates', () => {
         configureKey(' BEFORE_LAUNCH_KEY ');
         equal(savedSettings.get('tmdb_api_key'), 'BEFORE_LAUNCH_KEY');
-        equal(keyMenu().label, '⚙ TMDB API key: configured');
+        equal(keyMenu().label, 'TMDB API key: configured');
         configureKey(null);
         equal(savedSettings.get('tmdb_api_key'), 'BEFORE_LAUNCH_KEY');
         equal(prompts.at(-1).value, '');
         ok(!JSON.stringify(prompts).includes('BEFORE_LAUNCH_KEY'));
         configureKey('');
-        equal(keyMenu().label, '⚙ TMDB API key: not set');
-        equal(menus.size, 2);
+        equal(keyMenu().label, 'TMDB API key: not set');
+        equal(menus.size, 4);
         ok(!document.getElementById('comps-rehost-dialog'));
         equal(calls.length, 0);
     });
@@ -510,7 +512,7 @@ async function domTests(script, examples, pixhostHTML) {
     });
     await test('TMDB menu saves and clears the key and refreshes the open dialog without changing its reference', async () => {
         calls.length = 0;
-        ok(settingReads.every(key => key === 'tmdb_api_key'));
+        ok(settingReads.every(key => ['tmdb_api_key', 'ptscreens_api_key', 'imgbb_api_key', 'image_bbcode_width'].includes(key)));
         ok(api.tmdbSearchSection.hidden && !api.tmdbSearchHint.hidden);
         ok(!api.tmdbInput.disabled && !api.tmdbInput.hidden);
         await api.findTMDB();
@@ -526,7 +528,7 @@ async function domTests(script, examples, pixhostHTML) {
         GM_setValue = () => { throw new Error('storage unavailable'); };
         configureKey('not-saved');
         ok(alerts.at(-1).includes('Could not save'));
-        equal(keyMenu().label, '⚙ TMDB API key: configured');
+        equal(keyMenu().label, 'TMDB API key: configured');
         equal(savedSettings.get('tmdb_api_key'), 'PRIVATE_SAVED_KEY');
         GM_setValue = setValue;
         configureKey('');
@@ -922,7 +924,7 @@ async function domTests(script, examples, pixhostHTML) {
         launchFromMenu();
         equal(document.querySelectorAll('#comps-rehost-dialog').length, 1);
         api.dialog.querySelector('button[aria-label="Close"]').click();
-        equal(menus.size, 2);
+        equal(menus.size, 4);
         root.querySelector('img').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         equal(pageClicks, 1);
         root.remove();
@@ -939,6 +941,248 @@ async function domTests(script, examples, pixhostHTML) {
         const click = new MouseEvent('click', { bubbles: true, cancelable: true });
         document.body.dispatchEvent(click);
         ok(!click.defaultPrevented);
+    });
+    // Standalone workflows use the same mocked DOM and transfers, in a fresh dialog.
+    launchFromMenu();
+    const imagesAPI = rehost;
+    const standaloneItems = Array.from({ length: 3 }, (_, i) => ({ source: `https://images.test/standalone-${i}.png`, preview: `https://images.test/standalone-${i}.png` }));
+    const chooseHost = value => { imagesAPI.destination.value = value; imagesAPI.destination.dispatchEvent(new Event('change')); };
+    const setWidth = value => { imagesAPI.width.value = value; imagesAPI.width.dispatchEvent(new Event('input')); };
+    const setHostKey = (host, value) => {
+        promptValue = value;
+        [...menus.values()].find(menu => menu.label.startsWith(`${host} API key:`)).callback();
+    };
+    const hostResponse = (host, id = 'one') => ({ responseText: JSON.stringify(host === 'pixhost'
+        ? { show_url: `https://pixhost.to/show/123/${id}.png`, th_url: `https://t12.pixhost.to/thumbs/123/${id}.png` }
+        : { success: true, status_code: 200, data: { url_viewer: `https://${host === 'imgbb' ? 'ibb.co' : 'ptscreens.com/image'}/${id}`,
+            image: { url: `https://${host === 'imgbb' ? 'i.ibb.co' : 'img.ptscreens.com'}/${id}.png` },
+            display_url: 'https://images.test/resized.png', medium: { url: 'https://images.test/medium.png' } } }) });
+    await test('standalone mode accepts odd selections and ignores hidden comparison settings', async () => {
+        calls.length = 0;
+        imagesAPI.showArea({ root: null, images: standaloneItems, names: ['GroupA', 'GroupB'] });
+        imagesAPI.candidates.children[0].click();
+        imagesAPI.candidates.children[2].dispatchEvent(new MouseEvent('click', { shiftKey: true }));
+        imagesAPI.imageOrder.value = 'columns';
+        imagesAPI.tmdbInput.value = 'invalid';
+        imagesAPI.names.children[1].value = 'GroupA';
+        imagesAPI.update();
+        ok(imagesAPI.uploadButton.disabled);
+        chooseHost('pixhost');
+        ok(!imagesAPI.uploadButton.disabled && !imagesAPI.downloadButton.disabled);
+        equal(imagesAPI.selectedImages().map(item => item.source), standaloneItems.map(item => item.source));
+        ok([...imagesAPI.dialog.querySelectorAll('.comparison-only')].every(node => node.hidden));
+        equal(imagesAPI.width.value, '');
+        equal(calls.length, 0);
+        chooseHost('slowpics');
+        ok(imagesAPI.uploadButton.disabled && imagesAPI.downloadButton.disabled);
+        ok([...imagesAPI.dialog.querySelectorAll('.comparison-only')].every(node => !node.hidden));
+        chooseHost('ptscreens');
+        await imagesAPI.run('upload');
+        equal(calls.length, 0);
+        ok(imagesAPI.status.textContent.includes('PTScreens API key'));
+        ok(!imagesAPI.state.job);
+    });
+    await test('standalone key prompts save, clear and cancel without exposing saved keys', () => {
+        for (const [host, storage] of [['PTScreens', 'ptscreens_api_key'], ['ImgBB', 'imgbb_api_key']]) {
+            setHostKey(host, ` ${host}_SECRET `);
+            equal(savedSettings.get(storage), `${host}_SECRET`);
+            setHostKey(host, null);
+            equal(savedSettings.get(storage), `${host}_SECRET`);
+            setHostKey(host, '');
+            equal(savedSettings.get(storage), '');
+            setHostKey(host, `${host}_SECRET`);
+        }
+        ok(!imagesAPI.uploadButton.disabled);
+        equal(menus.size, 4);
+        ok(prompts.every(prompt => prompt.value === ''));
+        ok(!JSON.stringify(prompts).includes('PTScreens_SECRET'));
+    });
+    await test('host adapters preserve bytes, use correct fields and isolate credentials', async () => {
+        calls.length = 0;
+        for (const host of ['ptscreens', 'imgbb', 'pixhost']) {
+            handler = () => hostResponse(host);
+            const result = await imagesAPI.uploadImage(host, { blob: png, extension: 'png' }, 'Image0001.png', false,
+                host === 'ptscreens' ? 'PTScreens_SECRET' : host === 'imgbb' ? 'ImgBB_SECRET' : '', controller().signal);
+            const call = calls.at(-1);
+            equal(call.anonymous, true);
+            equal(call.cookiePartition, undefined);
+            equal(call.headers['X-XSRF-TOKEN'], undefined);
+            equal(call.headers['Content-Type'], undefined);
+            equal(call.redirect, 'error');
+            if (host === 'ptscreens') {
+                equal(call.url, 'https://ptscreens.com/api/1/upload');
+                equal(call.headers['X-API-Key'], 'PTScreens_SECRET');
+                equal([...atob(call.data.get('image'))].map(char => char.charCodeAt(0)), [...pngBytes]);
+                equal([...call.data.keys()], ['image']);
+                equal(result.originalUrl, 'https://img.ptscreens.com/one.png');
+            } else {
+                equal(call.headers['X-API-Key'], undefined);
+                const file = call.data.get(host === 'imgbb' ? 'image' : 'img');
+                equal(file.name, 'Image0001.png');
+                equal(file.type, 'image/png');
+                equal([...new Uint8Array(await file.arrayBuffer())], [...pngBytes]);
+                if (host === 'imgbb') {
+                    equal(call.url, 'https://api.imgbb.com/1/upload');
+                    equal(call.data.get('key'), 'ImgBB_SECRET');
+                    ok(!call.data.has('expiration'));
+                    equal(result.originalUrl, 'https://i.ibb.co/one.png');
+                } else {
+                    equal(call.url, 'https://api.pixhost.to/images');
+                    equal([...call.data.keys()], ['img', 'content_type']);
+                    equal(call.data.get('content_type'), '0');
+                    equal(result.originalUrl, 'https://img12.pixhost.to/images/123/one.png');
+                }
+            }
+        }
+        handler = () => hostResponse('pixhost');
+        await imagesAPI.uploadImage('pixhost', { blob: png }, 'Image0001.png', true, '', controller().signal);
+        equal(calls.at(-1).data.get('content_type'), '1');
+        ok(!imagesAPI.diagnostics.join('').includes('_SECRET'));
+    });
+    await test('invalid host responses and unsafe BBCode URLs never count as success', async () => {
+        for (const [host, data] of [
+            ['imgbb', { success: false }], ['ptscreens', { status_code: 400 }], ['pixhost', {}],
+            ['pixhost', { show_url: 'https://pixhost.to/show/a', th_url: 'https://images.test/thumb.png' }],
+            ['imgbb', { success: true, data: { url_viewer: 'javascript:alert(1)', image: { url: 'https://images.test/a.png' } } }],
+            ['ptscreens', { status_code: 200, data: { url_viewer: 'https://ptscreens.com/image/a', image: { url: 'https://images.test/a[img].png' } } }],
+            ['imgbb', { success: true, data: { url_viewer: 'https://user:secret@ibb.co/a', image: { url: 'https://images.test/a.png' } } }]
+        ]) await rejects(() => imagesAPI.imageUploadResult(host, data), /invalid upload result/);
+        handler = () => ({ responseText: '<html>not JSON</html>' });
+        await rejects(() => imagesAPI.uploadImage('imgbb', { blob: png }, 'Image0001.png', false, 'ImgBB_SECRET', controller().signal), /invalid upload response/);
+        handler = () => { throw new Error('network error containing ImgBB_SECRET'); };
+        await rejects(() => imagesAPI.uploadImage('imgbb', { blob: png }, 'Image0001.png', false, 'ImgBB_SECRET', controller().signal), /failed or timed out/);
+        ok(!imagesAPI.diagnostics.join('').includes('ImgBB_SECRET'));
+    });
+    await test('host limits reject incompatible images without upload requests', async () => {
+        calls.length = 0;
+        for (const host of ['imgbb', 'pixhost']) {
+            await rejects(() => imagesAPI.uploadImage(host, { blob: { size: 40 * 1024 * 1024, type: 'image/png' } }, 'Image0001.png', false, '', controller().signal), /exceeds/);
+        }
+        await rejects(() => imagesAPI.uploadImage('pixhost', { blob: new Blob(['BM'], { type: 'image/bmp' }) }, 'Image0001.bmp', false, '', controller().signal), /does not support/);
+        equal(calls.length, 0);
+    });
+    await test('partial results remain copyable and retry skips successes with the latest saved key', async () => {
+        calls.length = 0;
+        chooseHost('imgbb');
+        let posts = 0;
+        handler = options => {
+            if (options.method !== 'POST') return imageResponse();
+            posts++;
+            return posts === 2 ? { status: 503 } : hostResponse('imgbb', String(posts));
+        };
+        await imagesAPI.run('upload');
+        equal(imagesAPI.state.job.done, 1);
+        equal(imagesAPI.state.job.results.length, 1);
+        ok(imagesAPI.bbcode.value.includes('https://i.ibb.co/1.png'));
+        ok(!imagesAPI.copyBBCode.disabled);
+        ok(imagesAPI.destination.matches(':disabled'));
+        ok(!imagesAPI.width.matches(':disabled'));
+        equal(imagesAPI.uploadButton.textContent, 'Retry upload');
+        setHostKey('ImgBB', 'NEW_IMG_SECRET');
+        setWidth('350');
+        equal(imagesAPI.bbcode.value, '[url=https://ibb.co/1][img=350]https://i.ibb.co/1.png[/img][/url]');
+        const beforeRetry = calls.length;
+        await imagesAPI.run('upload');
+        equal(imagesAPI.state.job.done, 3);
+        equal(posts, 4);
+        equal(calls.filter(call => call.method !== 'POST').length, 3);
+        ok(calls.slice(beforeRetry).filter(call => call.method === 'POST').every(call => call.data.get('key') === 'NEW_IMG_SECRET'));
+        equal(imagesAPI.bbcode.value.split(' ').length, 3);
+        ok(imagesAPI.uploadButton.disabled);
+        ok(calls.filter(call => call.method !== 'POST').every(call => !call.data && !call.headers?.['X-API-Key'] && !call.cookiePartition));
+        ok(calls.every(call => !call.url.includes('slow.pics')));
+        ok(!imagesAPI.diagnostics.join('').includes('NEW_IMG_SECRET'));
+    });
+    await test('BBCode width is persistent, validated and changes output without transfers', async () => {
+        calls.length = 0;
+        const originals = imagesAPI.state.job.results;
+        equal(savedSettings.get('image_bbcode_width'), '350');
+        setWidth('');
+        equal(savedSettings.get('image_bbcode_width'), '');
+        equal(imagesAPI.bbcode.value, originals.map(item => `[url=${item.pageUrl}][img]${item.originalUrl}[/img][/url]`).join(' '));
+        for (const value of ['0', '-1', '1.5', '1e3', '350px', '9007199254740992']) {
+            setWidth(value);
+            ok(imagesAPI.copyBBCode.disabled && !imagesAPI.width.checkValidity());
+            equal(savedSettings.get('image_bbcode_width'), '');
+        }
+        setWidth('400');
+        ok(imagesAPI.width.checkValidity());
+        let copied;
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { copied = value; } } });
+        imagesAPI.copyBBCode.click();
+        await Promise.resolve();
+        equal(copied, imagesAPI.bbcode.value);
+        equal(calls.length, 0);
+    });
+    await test('standalone downloads preserve page order and use sequential names', async () => {
+        imagesAPI.resetButton.click();
+        equal(imagesAPI.result.children.length, 0);
+        ok(!imagesAPI.destination.matches(':disabled'));
+        const downloads = [];
+        handler = () => imageResponse();
+        GM_download = options => { downloads.push(options.name); queueMicrotask(() => options.onload({})); return { abort() {} }; };
+        await imagesAPI.run('download');
+        equal(downloads, ['Image0001.png', 'Image0002.png', 'Image0003.png']);
+        GM_download = () => { throw new Error('Unexpected download'); };
+    });
+    await test('standalone cancellation preserves completed images and resumes the aborted image', async () => {
+        calls.length = 0;
+        chooseHost('pixhost');
+        let posts = 0, pending;
+        handler = options => {
+            if (options.method !== 'POST') return imageResponse();
+            if (++posts === 2) { pending(); return null; }
+            return hostResponse('pixhost', String(posts));
+        };
+        const blocked = new Promise(resolve => { pending = resolve; });
+        const running = imagesAPI.run('upload');
+        await blocked;
+        imagesAPI.state.active.abort();
+        await running;
+        equal(imagesAPI.state.job.done, 1);
+        equal(posts, 2);
+        ok(imagesAPI.status.textContent.includes('Cancelled'));
+        ok(imagesAPI.bbcode.value.includes('/1.png'));
+        handler = options => options.method === 'POST' ? hostResponse('pixhost', String(++posts)) : imageResponse();
+        await imagesAPI.run('upload');
+        equal(imagesAPI.state.job.done, 3);
+        equal(posts, 4);
+        equal(calls.filter(call => call.method !== 'POST').length, 3);
+        imagesAPI.resetButton.click();
+    });
+    await test('standalone rate limits prevent early retries and challenges stop the batch', async () => {
+        calls.length = 0;
+        handler = options => options.method === 'POST'
+            ? { status: 429, responseHeaders: 'Retry-After: 120' } : imageResponse();
+        await imagesAPI.run('upload');
+        equal(imagesAPI.state.job.done, 0);
+        equal(calls.length, 2);
+        await imagesAPI.run('upload');
+        equal(calls.length, 2);
+        ok(imagesAPI.status.textContent.includes('wait'));
+        imagesAPI.retryAfter.clear();
+        handler = () => ({ status: 403, responseHeaders: 'cf-mitigated: challenge' });
+        await imagesAPI.run('upload');
+        equal(calls.length, 3);
+        equal(imagesAPI.state.job.done, 0);
+        imagesAPI.resetButton.click();
+    });
+    await test('width survives closing and reopening, including an explicitly blank value', () => {
+        imagesAPI.close();
+        equal(imagesAPI.state.job, null);
+        calls.length = 0;
+        launchFromMenu();
+        equal(rehost.width.value, '400');
+        equal(rehost.destination.value, 'slowpics');
+        rehost.width.value = '';
+        rehost.width.dispatchEvent(new Event('input'));
+        rehost.close();
+        launchFromMenu();
+        equal(rehost.width.value, '');
+        equal(calls.length, 0);
+        const root = fixture(`<div>${img('single')}</div>`);
+        equal(rehost.detect(root.querySelector('img')).images.length, 1);
+        rehost.close();
     });
     return results;
 }
