@@ -87,8 +87,8 @@ async function domTests(script, examples, pixhostHTML) {
             uploadButton, downloadButton, summary, settings, preview, run, status, resetButton, result, browserID,
             diagnostics, retryAfter, slowRequest, fileColumns, collectionName, title, publicInput,
             tmdbReference, comparisonFields, tmdbType, tmdbInput, tmdbError, searchTMDB, findTMDB,
-            tmdbQuery, tmdbSearchSection, tmdbSearchHint,
-            tmdbResults, tmdbSearchButton, tmdbSearchStatus };
+            tmdbQuery, tmdbSearchSection, tmdbSearchHint, imageOrder, selectedImages, suggestedMediaType,
+            tmdbResults, tmdbResultsButton, tmdbSearchButton, tmdbSearchStatus };
         chooseArea();
     }
     })();`);
@@ -557,7 +557,7 @@ async function domTests(script, examples, pixhostHTML) {
             { id: -1, title: 'Invalid' }
         ] }) });
         equal(await api.searchTMDB('MOVIE', 'PRIVATE_SEARCH_TITLE', 'PRIVATE_TMDB_KEY', controller().signal), [
-            { id: '123', title: 'Example Film', year: '2020' }, { id: '124', title: 'Example Film', year: '1990' }
+            { id: '123', title: 'Example Film', year: '2020', countries: [], poster: '' }, { id: '124', title: 'Example Film', year: '1990', countries: [], poster: '' }
         ]);
         const request = calls[0], url = new URL(request.url);
         equal(url.origin, 'https://api.themoviedb.org');
@@ -568,7 +568,7 @@ async function domTests(script, examples, pixhostHTML) {
         ok(!request.cookiePartition && !request.headers.Authorization && !request.headers['X-XSRF-TOKEN']);
         handler = () => ({ responseText: JSON.stringify({ results: [{ id: 456, name: 'Example Show' }] }) });
         equal(await api.searchTMDB('TV', 'Example Show', 'PRIVATE_TMDB_KEY', controller().signal),
-            [{ id: '456', title: 'Example Show', year: 'Unknown year' }]);
+            [{ id: '456', title: 'Example Show', year: 'Unknown year', countries: [], poster: '' }]);
         equal(new URL(calls[1].url).pathname, '/3/search/tv');
         equal(new URL(calls[1].url).searchParams.get('api_key'), 'PRIVATE_TMDB_KEY');
         ok(!calls[1].headers.Authorization);
@@ -595,6 +595,83 @@ async function domTests(script, examples, pixhostHTML) {
         equal(calls.length, count);
         api.retryAfter.delete('https://api.themoviedb.org');
     });
+    await test('TMDB media type recognizes TV markers and defaults to movies', () => {
+        for (const title of ['Example.Show.S02E03.1080p', 'Example S01 720p', 'Example Season 2', 'Example 1x03', 'Example Episode 12']) {
+            equal(api.suggestedMediaType(title), 'TV');
+        }
+        for (const title of ['Example Film 2020 1080p', 'Example Film', '']) equal(api.suggestedMediaType(title), 'MOVIE');
+    });
+    await test('TMDB results show countries and safe posters, tolerate missing metadata, and support keyboard selection', async () => {
+        configureKey('test-key');
+        api.tmdbType.value = 'MOVIE';
+        api.tmdbQuery.value = 'Example';
+        handler = options => ({ responseText: JSON.stringify(options.url.includes('/search/') ? { results: [
+            { id: 101, title: '<Example Film>', release_date: '2020-01-01', poster_path: '/poster.jpg' },
+            { id: 102, title: 'Example Film', poster_path: 'https://untrusted.test/poster.jpg' }
+        ] } : { production_countries: [{ iso_3166_1: 'US' }, { iso_3166_1: 'CA' }] }) });
+        await api.findTMDB();
+        equal(api.tmdbResults.children.length, 2);
+        equal(api.tmdbResults.querySelector('.tmdb-country').textContent, 'United States, Canada');
+        equal(api.tmdbResults.querySelector('img').src, 'https://image.tmdb.org/t/p/w92/poster.jpg');
+        equal(api.tmdbResults.querySelectorAll('img').length, 1);
+        ok(!api.tmdbResults.querySelector('example'));
+        equal(api.tmdbSearchStatus.textContent, '');
+        ok(!api.dialog.textContent.includes('Manual references need no API key.'));
+        api.tmdbResultsButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        equal(api.tmdbResultsButton.getAttribute('aria-expanded'), 'true');
+        equal(api.tmdbResults.getRootNode().activeElement, api.tmdbResults.children[0]);
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+        ok(api.tmdbResults.hidden && document.getElementById('comps-rehost-dialog'));
+        api.tmdbResultsButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+        equal(api.tmdbResults.getRootNode().activeElement, api.tmdbResults.children[1]);
+        api.tmdbResults.children[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+        equal(api.tmdbResults.getRootNode().activeElement, api.tmdbResults.children[1]);
+        api.tmdbResults.children[1].click();
+        equal(api.tmdbInput.value, 'movie/102');
+        equal(api.tmdbResults.children[1].getAttribute('aria-selected'), 'true');
+        api.tmdbInput.value = '';
+        api.tmdbInput.dispatchEvent(new Event('input'));
+        equal(api.tmdbResults.children[1].getAttribute('aria-selected'), 'false');
+        api.tmdbResults.querySelector('img').dispatchEvent(new Event('error'));
+        equal(api.tmdbResults.querySelectorAll('img').length, 0);
+        handler = options => options.url.includes('/search/')
+            ? { responseText: JSON.stringify({ results: [{ id: 103, title: 'Example' }] }) } : { status: 503 };
+        await api.findTMDB();
+        equal(api.tmdbResults.querySelector('.tmdb-country').textContent, 'Unknown country');
+        ok(!api.tmdbResultsButton.disabled);
+        api.tmdbType.value = 'TV';
+        handler = () => ({ responseText: JSON.stringify({ results: [{ id: 104, name: 'Example', origin_country: ['GB', 'invalid'] }] }) });
+        calls.length = 0;
+        await api.findTMDB();
+        equal(calls.length, 1);
+        equal(api.tmdbResults.querySelector('.tmdb-country').textContent, 'United Kingdom');
+        api.tmdbType.value = 'MOVIE';
+        api.tmdbType.dispatchEvent(new Event('change'));
+    });
+    await test('TMDB country lookups stop on rate limits and are cancelled when a query changes', async () => {
+        calls.length = 0;
+        const results = [{ id: 101, title: 'Example A' }, { id: 102, title: 'Example B' }];
+        handler = options => options.url.includes('/search/') ? { responseText: JSON.stringify({ results }) }
+            : { status: 429, responseHeaders: 'Retry-After: 120' };
+        await api.findTMDB();
+        equal(calls.length, 2);
+        equal(api.tmdbResults.children.length, 2);
+        ok(!api.tmdbResultsButton.disabled);
+        api.retryAfter.delete('https://api.themoviedb.org');
+        calls.length = 0;
+        handler = options => options.url.includes('/search/') ? { responseText: JSON.stringify({ results }) } : null;
+        const pending = api.findTMDB();
+        for (let i = 0; i < 30 && calls.length < 2; i++) await Promise.resolve();
+        equal(calls.length, 2);
+        equal(api.tmdbResults.children.length, 2);
+        ok(!api.tmdbSearchButton.disabled);
+        api.tmdbQuery.value = 'Another title';
+        api.tmdbQuery.dispatchEvent(new Event('input'));
+        await pending;
+        equal(calls.length, 2);
+        equal(api.tmdbResults.children.length, 0);
+        ok(api.tmdbResultsButton.disabled);
+    });
     await test('TMDB dropdown selects movie/TV IDs, cancels stale searches and never searches on input', async () => {
         calls.length = 0;
         api.tmdbQuery.value = 'Example';
@@ -605,18 +682,19 @@ async function domTests(script, examples, pixhostHTML) {
         await api.findTMDB();
         equal(new URL(calls[0].url).searchParams.get('api_key'), 'test-key');
         equal(api.tmdbInput.value, '');
-        equal(api.tmdbResults.options[1].textContent, 'Example Film (2020) · ID 123');
-        api.tmdbResults.value = '123';
-        api.tmdbResults.dispatchEvent(new Event('change'));
+        ok(api.tmdbResults.children[0].textContent.includes('Example Film (2020) · ID 123'));
+        api.tmdbResultsButton.click();
+        ok(!api.tmdbResults.hidden);
+        api.tmdbResults.children[0].click();
+        ok(api.tmdbResults.hidden);
         equal(api.tmdbInput.value, 'movie/123');
         api.tmdbType.value = 'TV';
         api.tmdbType.dispatchEvent(new Event('change'));
         equal(api.tmdbInput.value, '');
-        ok(api.tmdbResults.disabled);
+        ok(api.tmdbResultsButton.disabled);
         handler = () => ({ responseText: JSON.stringify({ results: [{ id: 456, name: 'Example Show', first_air_date: '2021-01-01' }] }) });
         await api.findTMDB();
-        api.tmdbResults.value = '456';
-        api.tmdbResults.dispatchEvent(new Event('change'));
+        api.tmdbResults.children[0].click();
         equal(api.tmdbReference(api.tmdbInput.value), 'TV_456');
         handler = () => null;
         const pending = api.findTMDB();
@@ -624,11 +702,11 @@ async function domTests(script, examples, pixhostHTML) {
         api.tmdbQuery.value = 'Another show';
         api.tmdbQuery.dispatchEvent(new Event('input'));
         await pending;
-        equal(api.tmdbResults.options.length, 1);
+        equal(api.tmdbResults.children.length, 0);
         ok(!api.tmdbSearchButton.disabled);
         handler = () => ({ responseText: '{"results":[]}' });
         await api.findTMDB();
-        ok(api.tmdbResults.disabled && api.tmdbSearchStatus.textContent.includes('No matches'));
+        ok(api.tmdbResultsButton.disabled && api.tmdbSearchStatus.textContent.includes('No matches'));
         ok(calls.every(call => new URL(call.url).origin === 'https://api.themoviedb.org'));
         api.tmdbType.value = 'MOVIE';
         api.tmdbType.dispatchEvent(new Event('change'));
@@ -710,6 +788,52 @@ async function domTests(script, examples, pixhostHTML) {
             ['A', 'B'], active.signal, message => messages.push(message));
         equal(saved, 1);
         ok(messages.at(-1).startsWith('Cancelled — 1 saved, 0 failed, 1 not completed.'));
+    });
+    await test('column order groups selected images consistently in previews, downloads and upload slots', async () => {
+        const images = ['a', 'b', 'c', 'd', 'e', 'f'].map(name => ({ source: `https://images.test/${name}.png`, preview: `https://images.test/${name}.png` }));
+        api.showArea({ root: document.body, images, names: ['GroupA', 'GroupB'] });
+        [...api.dialog.querySelectorAll('button')].find(button => button.textContent === 'Select all').click();
+        equal(api.imageOrder.value, 'rows');
+        equal(api.selectedImages().map(item => item.source), images.map(item => item.source));
+        api.imageOrder.value = 'columns';
+        api.imageOrder.dispatchEvent(new Event('change'));
+        const expected = ['a', 'd', 'b', 'e', 'c', 'f'].map(name => `https://images.test/${name}.png`);
+        equal([...api.preview.querySelectorAll('img')].map(img => img.src), expected);
+        equal([...api.preview.querySelectorAll('figcaption')].map(node => node.textContent),
+            ['0001 · GroupA', '0001 · GroupB', '0002 · GroupA', '0002 · GroupB', '0003 · GroupA', '0003 · GroupB']);
+        calls.length = 0;
+        handler = imageResponse;
+        const saved = [];
+        GM_download = options => { saved.push(options.name); queueMicrotask(() => options.onload()); return { abort() {} }; };
+        await api.run('download');
+        equal(calls.map(call => call.url), expected);
+        equal(saved, ['GroupA0001.png', 'GroupB0001.png', 'GroupA0002.png', 'GroupB0002.png', 'GroupA0003.png', 'GroupB0003.png']);
+        calls.length = 0;
+        handler = options => {
+            if (options.url.endsWith('/comparison') && options.method === 'GET') return { responseHeaders: 'Set-Cookie: XSRF-TOKEN=token;', responseText: '' };
+            if (options.url.endsWith('/upload/comparison')) return { responseText: JSON.stringify({ collectionUuid: 'collection', key: 'key', images: [['a1', 'b1'], ['a2', 'b2'], ['a3', 'b3']] }) };
+            if (options.url.endsWith('/upload/image')) return { responseText: 'OK' };
+            return imageResponse();
+        };
+        await api.run('upload');
+        equal(calls.filter(call => call.url.startsWith('https://images.test/')).map(call => call.url), expected);
+        const uploads = calls.filter(call => call.url.endsWith('/upload/image'));
+        equal(uploads.map(call => call.data.get('imageUuid')), ['a1', 'b1', 'a2', 'b2', 'a3', 'b3']);
+        equal(uploads.map(call => call.data.get('file').name), saved);
+        ok(api.imageOrder.matches(':disabled'));
+        api.resetButton.click();
+        api.columns.value = '3';
+        api.columns.dispatchEvent(new Event('change'));
+        equal(api.selectedImages().map(item => item.source), [images[0], images[2], images[4], images[1], images[3], images[5]].map(item => item.source));
+        api.columns.value = '2';
+        api.columns.dispatchEvent(new Event('change'));
+        api.candidates.children[1].click();
+        ok(api.uploadButton.disabled && api.downloadButton.disabled);
+        api.candidates.children[4].click();
+        equal(api.selectedImages().map(item => item.source), [images[0], images[3], images[2], images[5]].map(item => item.source));
+        api.imageOrder.value = 'rows';
+        api.imageOrder.dispatchEvent(new Event('change'));
+        api.chooseArea();
     });
     await test('picker suppresses site clicks, selection updates the grid and incomplete rows block both outputs', async () => {
         document.title = 'Hot Dog 2018 1080p BluRay DTS x264-GroupName :: SITE';
@@ -805,7 +929,9 @@ async function domTests(script, examples, pixhostHTML) {
         ok(!document.getElementById('comps-rehost-dialog'));
     });
     await test('Escape removes the picker and its temporary click listeners', () => {
+        document.title = 'Example.Show.S02E03.1080p';
         launchFromMenu();
+        equal(rehost.tmdbType.value, 'TV');
         equal(savedSettings.get('tmdb_api_key'), 'test-key');
         ok(!rehost.tmdbSearchSection.hidden);
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
