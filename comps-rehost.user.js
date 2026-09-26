@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         comps-rehost
 // @namespace    https://github.com/gizeto
-// @version      1.1.11
-// @description  Select nearby comparison images, upload to slow.pics, or download originals on demand.
+// @version      1.2.0
+// @description  Select images, upload comparisons to slow.pics or originals to PTScreens, ImgBB and Pixhost, or download originals.
 // @author       gizeto
 // @match        http://*/*
 // @match        https://*/*
@@ -16,6 +16,10 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @connect      ptscreens.com
+// @connect      imgbb.com
+// @connect      api.imgbb.com
+// @connect      api.pixhost.to
 // @connect      self
 // @connect      slow.pics
 // @connect      api.themoviedb.org
@@ -31,26 +35,29 @@
     'use strict';
 
     let refreshOpenSettings = null;
-    let keyMenuId;
+    const keyMenus = new Map();
+    const keySettings = { tmdb_api_key: 'TMDB', ptscreens_api_key: 'PTScreens', imgbb_api_key: 'ImgBB' };
 
-    function registerKeyMenu() {
-        const storedKey = GM_getValue('tmdb_api_key', '');
-        const configured = typeof storedKey === 'string' && !!storedKey.trim();
-        keyMenuId = GM_registerMenuCommand(`TMDB API key: ${configured ? 'configured' : 'not set'}`, configureTMDB,
-            keyMenuId === undefined ? {} : { id: keyMenuId });
+    function savedKey(key) {
+        const value = GM_getValue(key, '');
+        return typeof value === 'string' ? value.trim() : '';
     }
 
-    function configureTMDB() {
-        const key = prompt('Set tmdb_api_key for TMDB title search. Leave blank to clear the saved key. Cancel keeps the current key.', '');
-        if (key === null) return;
-        try { GM_setValue('tmdb_api_key', key.trim()); }
-        catch { alert('Could not save the TMDB API key. The previous value is unchanged.'); return; }
-        registerKeyMenu();
-        refreshOpenSettings?.();
+    function registerKeyMenu(key) {
+        const label = keySettings[key];
+        const id = keyMenus.get(key);
+        keyMenus.set(key, GM_registerMenuCommand(`${label} API key: ${savedKey(key) ? 'configured' : 'not set'}`, () => {
+            const value = prompt(`Set ${key}. Leave blank to clear the saved key. Cancel keeps the current key.`, '');
+            if (value === null) return;
+            try { GM_setValue(key, value.trim()); }
+            catch { alert(`Could not save the ${label} API key. The previous value is unchanged.`); return; }
+            registerKeyMenu(key);
+            refreshOpenSettings?.();
+        }, id === undefined ? {} : { id }));
     }
 
     GM_registerMenuCommand('Select comparison images', launch);
-    registerKeyMenu();
+    Object.keys(keySettings).forEach(registerKeyMenu);
 
     function launch() {
         const HOST_ID = 'comps-rehost-dialog';
@@ -236,9 +243,10 @@
         }
 
         function detect(target) {
-            let fallback;
+            let fallback, single;
             for (let root = target; root && root !== document.body && root !== document.documentElement; root = root.parentElement) {
                 const found = scan(root, target);
+                if (found.images.length === 1) single ||= { root, images: found.images, names: [] };
                 if (found.images.length < 2) continue;
                 fallback ||= { root, images: found.images, names: [] };
                 let index = found.headings.findLastIndex(heading => heading.position <= found.targetPosition);
@@ -249,7 +257,7 @@
                 const images = found.images.filter(item => item.position > heading.position && item.position < end);
                 if (images.length >= 2) return { root, images, names: heading.names };
             }
-            return fallback;
+            return fallback || single;
         }
 
         function selectRange(selected, index, anchor, shift) {
@@ -565,6 +573,100 @@
             return `${SLOW}/c/${job.collection.key}`;
         }
 
+        const imageHosts = {
+            ptscreens: { label: 'PTScreens', key: 'ptscreens_api_key', url: 'https://ptscreens.com/api/1/upload' },
+            imgbb: { label: 'ImgBB', key: 'imgbb_api_key', url: 'https://api.imgbb.com/1/upload', maxSize: 32 * 1024 * 1024 },
+            pixhost: { label: 'Pixhost', url: 'https://api.pixhost.to/images', maxSize: 10 * 1024 * 1024,
+                formats: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif'] }
+        };
+
+        function hostKey(destination) {
+            const config = imageHosts[destination];
+            if (!config) throw new Error('Unknown image destination.');
+            const key = config.key ? savedKey(config.key) : '';
+            if (config.key && !key) throw new Error(`Set the ${config.label} API key in the Tampermonkey menu before uploading.`);
+            return key;
+        }
+
+        function resultURL(value) {
+            if (typeof value !== 'string' || !/^https?:\/\//i.test(value) || /[\[\]\s]/.test(value)) return '';
+            return httpURL(value);
+        }
+
+        function imageUploadResult(destination, data) {
+            let pageUrl, original;
+            if (destination === 'pixhost') {
+                pageUrl = resultURL(data?.show_url);
+                const thumb = resultURL(data?.th_url);
+                if (thumb && /^t\d+\.(?:pixhost\.(?:to|cc)|pixho\.st)$/.test(new URL(thumb).hostname)
+                    && new URL(thumb).pathname.startsWith('/thumbs/')) original = originalURL(thumb);
+            } else {
+                const success = destination === 'imgbb' ? data?.success === true : data?.status_code === 200;
+                if (success) {
+                    pageUrl = resultURL(data.data?.url_viewer);
+                    original = resultURL(data.data?.image?.url || (destination === 'imgbb' ? data.data?.url : ''));
+                }
+            }
+            if (!pageUrl || !original) throw new Error(`${imageHosts[destination].label} returned an invalid upload result. Retry may create a duplicate.`);
+            return { pageUrl, originalUrl: original };
+        }
+
+        async function uploadImage(destination, file, name, nsfw, key, signal) {
+            const config = imageHosts[destination];
+            if (config.maxSize && file.blob.size > config.maxSize) throw new Error(`${config.label}: image exceeds the ${config.maxSize / 1024 / 1024} MB limit.`);
+            if (config.formats && !config.formats.includes(file.blob.type)) throw new Error(`${config.label} does not support ${file.blob.type}. Choose another destination.`);
+            const data = new FormData();
+            const headers = { Accept: 'application/json' };
+            if (destination === 'ptscreens') {
+                const bytes = new Uint8Array(await file.blob.arrayBuffer());
+                const chunks = [];
+                for (let i = 0; i < bytes.length; i += 32768) chunks.push(String.fromCharCode(...bytes.subarray(i, i + 32768)));
+                data.append('image', btoa(chunks.join('')));
+                headers['X-API-Key'] = key;
+            } else if (destination === 'imgbb') {
+                data.append('key', key);
+                data.append('image', file.blob, name);
+            } else {
+                data.append('img', file.blob, name);
+                data.append('content_type', nsfw ? '1' : '0');
+            }
+            checkAbort(signal);
+            let response;
+            try { response = await request(config.url, { method: 'POST', data, headers, anonymous: true, redirect: 'error' }, signal); }
+            catch (error) {
+                // Manager network errors can contain URLs or request details. Do not surface credentials.
+                if (error.name === 'AbortError' || error.status || error.stopTransfer) throw error;
+                throw new Error(`${config.label} upload failed or timed out. Check access before retrying; retry may create a duplicate.`);
+            }
+            let parsed;
+            try { parsed = JSON.parse(response.responseText); }
+            catch { throw new Error(`${config.label} returned an invalid upload response. Retry may create a duplicate.`); }
+            return imageUploadResult(destination, parsed);
+        }
+
+        async function uploadImages(job, signal, status, changed = () => {}) {
+            const key = hostKey(job.destination);
+            for (; job.done < job.items.length;) {
+                checkAbort(signal);
+                const current = `${job.done + 1}/${job.items.length}`;
+                status(`Fetching original ${current}…`);
+                job.pending ||= await fetchOriginal(job.items[job.done], signal);
+                status(`Uploading image ${current} to ${imageHosts[job.destination].label}…`);
+                const uploaded = await uploadImage(job.destination, job.pending,
+                    filename(job.done, ['Image'], job.pending.extension), job.nsfw, key, signal);
+                job.results.push(uploaded);
+                job.pending = null;
+                job.done++;
+                changed();
+            }
+        }
+
+        function validWidth(value) { return value === '' || /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value)); }
+        function imageBBCode(results, width) {
+            if (!validWidth(width)) throw new Error('BBCode width must be blank or a positive integer.');
+            return results.map(({ pageUrl, originalUrl }) => `[url=${pageUrl}][img${width ? `=${width}` : ''}]${originalUrl}[/img][/url]`).join(' ');
+        }
+
         function fileColumns(names) {
             const prefixes = names.map(name => {
                 const safe = name.normalize('NFC').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').trim().slice(0, 80).replace(/[. ]+$/g, '') || 'Column';
@@ -641,9 +743,9 @@
             [hidden] { display: none !important; }
             h2, h3, p { margin: 0 0 10px; }
             fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
-            button, input, select { font: inherit; color: inherit; background: #303640; border: 1px solid #7d8796; border-radius: 4px; padding: 7px 10px; }
+            button, input, select, textarea { font: inherit; color: inherit; background: #303640; border: 1px solid #7d8796; border-radius: 4px; padding: 7px 10px; }
             button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
-            button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #76bcff; outline-offset: 2px; }
+            button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #76bcff; outline-offset: 2px; }
             input[type=number] { width: 72px; } input[type=checkbox] { accent-color: #76bcff; }
             .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
             .settings-section { padding: 14px; margin-bottom: 14px; border: 1px solid #424852; border-radius: 6px; background: #252930; }
@@ -694,6 +796,7 @@
             img { display: block; width: 100%; height: 85px; object-fit: contain; background: #111; }
             .preview { overflow: auto; } .preview .grid { min-width: min-content; } .preview figure { margin: 0; min-width: 110px; }
             figcaption { overflow-wrap: anywhere; } .status { white-space: pre-wrap; overflow-wrap: anywhere; }
+            textarea { width: 100%; min-height: 110px; resize: vertical; }
             a { color: #9cceff; }
             @media (max-width: 720px) {
                 .collection-fields, .tmdb-link-fields { grid-template-columns: minmax(0, 1fr); gap: 10px; }
@@ -704,11 +807,44 @@
                 .settings-section { padding: 12px; }
             }
         ` });
-        const picker = element('div', { className: 'picker', hidden: true }, 'Click the comparison area. Escape cancels. ',
+        const picker = element('div', { className: 'picker', hidden: true }, 'Click an image area. Escape cancels. ',
             button('Cancel', close));
         const dialog = element('dialog');
         const settings = element('fieldset');
         const field = (label, control) => element('label', { className: 'field' }, element('span', { className: 'field-label', textContent: label }), control);
+        const destination = element('select', { ariaLabel: 'Destination', onchange: () => {
+            resetTMDBResults(); update();
+        } }, ...[['slowpics', 'slow.pics'], ...Object.entries(imageHosts).map(([id, config]) => [id, config.label])]
+            .map(([value, textContent]) => element('option', { value, textContent })));
+        const nsfw = element('input', { type: 'checkbox', checked: false });
+        const nsfwField = element('label', { hidden: true }, nsfw, 'NSFW on Pixhost');
+        const keyHint = element('p', { role: 'status', hidden: true });
+        const storedWidth = GM_getValue('image_bbcode_width', '');
+        const width = element('input', { type: 'text', inputMode: 'numeric', ariaLabel: 'BBCode image width',
+            value: typeof storedWidth === 'string' && validWidth(storedWidth) ? storedWidth : '', oninput: () => {
+                const valid = validWidth(width.value);
+                width.setCustomValidity(valid ? '' : 'Enter a positive integer or leave blank.');
+                widthError.textContent = valid ? '' : 'BBCode width must be blank or a positive integer.';
+                if (valid) {
+                    try { GM_setValue('image_bbcode_width', width.value); }
+                    catch { widthError.textContent = 'Could not save BBCode width. This value applies only to this dialog.'; }
+                }
+                renderImageResults();
+            } });
+        const widthError = element('p', { role: 'status' });
+        const widthSection = element('div', { hidden: true }, field('BBCode image width', width), widthError);
+        const bbcode = element('textarea', { readOnly: true, ariaLabel: 'Image BBCode' });
+        const copyBBCode = button('Copy BBCode', async () => {
+            try { await navigator.clipboard.writeText(bbcode.value); status.textContent = 'BBCode copied.'; }
+            catch { status.textContent = 'Clipboard access was denied. Select and copy the BBCode below.'; }
+        });
+        function renderImageResults() {
+            if (!state.job?.results) return;
+            const valid = validWidth(width.value);
+            bbcode.value = valid ? imageBBCode(state.job.results, width.value) : '';
+            copyBBCode.disabled = !valid || !state.job.results.length;
+            if (state.job.results.length) result.replaceChildren(bbcode, copyBBCode);
+        }
         const title = element('input', { value: 'Comparison', ariaLabel: 'Collection name',
             oninput: () => { state.customTitle = true; } });
         const columns = element('input', { type: 'number', min: '1', value: '2', ariaLabel: 'Number of columns' });
@@ -784,16 +920,17 @@
         const resetButton = button('Start over', () => {
             state.job = null;
             result.replaceChildren();
-            status.textContent = 'Previous remote collections are kept. You can change the selection now.';
+            status.textContent = 'Previous remote uploads are kept. You can change the selection now.';
             update();
         });
         tmdbInput.id = 'tmdb-reference';
         settings.append(
-            element('section', { className: 'settings-section' },
+            element('section', { className: 'settings-section' }, field('Destination', destination), nsfwField, keyHint),
+            element('section', { className: 'settings-section comparison-only' },
                 element('div', { className: 'section-header' }, element('h3', { textContent: 'Collection' })),
                 element('div', { className: 'collection-fields' }, field('Collection name', title),
                     element('label', { className: 'visibility' }, publicInput, 'Public on slow.pics'))),
-            element('section', { className: 'settings-section' },
+            element('section', { className: 'settings-section comparison-only' },
                 element('div', { className: 'section-header' }, element('h3', { textContent: 'TMDB link' })),
                 tmdbSearchSection,
                 element('div', { className: 'tmdb-link-fields' }, tmdbResultField,
@@ -803,17 +940,17 @@
             element('section', { className: 'settings-section' },
                 element('div', { className: 'section-header' }, element('h3', { textContent: 'Images' }),
                     element('div', { className: 'controls' }, expand, button('Choose another area', chooseArea))), scope,
-                element('div', { className: 'image-fields' }, field('Columns', columns), field('Image order', imageOrder),
+                element('div', { className: 'image-fields comparison-only' }, field('Columns', columns), field('Image order', imageOrder),
                     element('div', { className: 'field column-names' }, element('span', { className: 'field-label', textContent: 'Column names' }), names)),
                 element('div', { className: 'selection-toolbar' }, element('span', { className: 'field-label', textContent: 'Select images' }), button('Select all', () => {
                 state.selected = new Set(state.images.map((_, i) => i)); state.anchor = null; update();
             }), button('Clear', () => { state.selected.clear(); state.anchor = null; update(); }),
                 hint('image-selection-help', 'Image selection help', 'Click to toggle · Shift-click to select a range · Image order follows the selected images on the page: row by row, or all of column 1, then column 2, etc.')), candidates));
-        dialog.append(element('div', { className: 'dialog-header' }, element('h2', { textContent: 'Comparison images' }),
+        dialog.append(element('div', { className: 'dialog-header' }, element('h2', { textContent: 'Rehost images' }),
             element('button', { type: 'button', className: 'close', textContent: '×', ariaLabel: 'Close', title: 'Close', onclick: close })),
-            settings, summary, element('div', { className: 'preview' }, preview),
+            settings, widthSection, summary, element('div', { className: 'preview' }, preview),
             element('div', { className: 'controls' }, uploadButton, downloadButton, cancelButton, resetButton), status, result, debugPanel,
-            element('a', { href: `${SLOW}/comparison`, target: '_blank', rel: 'noopener noreferrer', textContent: 'Open slow.pics (login or access check)' }));
+            element('a', { className: 'comparison-only', href: `${SLOW}/comparison`, target: '_blank', rel: 'noopener noreferrer', textContent: 'Open slow.pics (login or access check)' }));
         shadow.append(style, picker, dialog);
         document.documentElement.append(host);
 
@@ -822,7 +959,7 @@
         function selectedImages() {
             const items = state.images.filter((_, i) => state.selected.has(i));
             const n = countColumns();
-            if (imageOrder.value !== 'columns' || items.length % n) return items;
+            if (destination.value !== 'slowpics' || imageOrder.value !== 'columns' || items.length % n) return items;
             const rows = items.length / n;
             return items.map((_, i) => items[(i % n) * rows + Math.floor(i / n)]);
         }
@@ -834,6 +971,7 @@
             tmdbSearchSection.hidden = !tmdbAPIKey;
             tmdbResultField.hidden = !tmdbAPIKey;
             tmdbSearchHint.hidden = !!tmdbAPIKey;
+            update();
         };
 
         function cancelTMDBSearch() {
@@ -934,31 +1072,45 @@
         }
 
         function update() {
-            const items = selectedImages(), labels = getNames(), n = countColumns();
+            const standalone = destination.value !== 'slowpics';
+            const items = selectedImages(), labels = getNames(), n = standalone ? 1 : countColumns();
             if (!state.customTitle && !state.job) title.value = collectionName(document.title, labels);
             const busy = !!state.active;
-            let namingError = '';
-            try { fileColumns(labels); } catch (error) { namingError = error.message; }
-            let linkingError = '';
-            try { tmdbReference(tmdbInput.value); } catch (error) { linkingError = error.message; }
+            let namingError = '', linkingError = '', keyError = '';
+            if (!standalone) {
+                try { fileColumns(labels); } catch (error) { namingError = error.message; }
+                try { tmdbReference(tmdbInput.value); } catch (error) { linkingError = error.message; }
+            } else {
+                try { hostKey(destination.value); } catch (error) { keyError = error.message; }
+            }
+            dialog.querySelectorAll('.comparison-only').forEach(node => { node.hidden = standalone; });
+            widthSection.hidden = !standalone;
+            dialog.querySelector('#image-selection-help').textContent = 'Click to toggle · Shift-click to select a range · '
+                + (standalone ? 'Images follow their order on the page.'
+                    : 'Image order follows the selected images on the page: row by row, or all of column 1, then column 2, etc.');
+            nsfwField.hidden = destination.value !== 'pixhost';
+            keyHint.textContent = keyError;
+            keyHint.hidden = !keyError;
             tmdbError.textContent = linkingError;
             tmdbError.hidden = !linkingError;
             tmdbInput.setCustomValidity(linkingError);
             const invalid = !items.length || items.length % n !== 0 || !!namingError;
             settings.disabled = busy || !!state.job;
-            uploadButton.disabled = busy || invalid || !!linkingError || state.job?.done === items.length;
+            uploadButton.disabled = busy || invalid || !!linkingError || !!keyError || state.job?.done === items.length;
             downloadButton.disabled = busy || invalid;
             cancelButton.hidden = !busy;
             resetButton.hidden = !state.job || busy;
-            uploadButton.textContent = state.job && state.job.done < state.job.items.length ? 'Retry upload' : 'Upload to slow.pics';
+            uploadButton.textContent = state.job && state.job.done < state.job.items.length ? 'Retry upload'
+                : `Upload to ${standalone ? imageHosts[destination.value].label : 'slow.pics'}`;
             expand.disabled = !state.root || state.root === document.body;
             [...candidates.children].forEach((node, i) => node.setAttribute('aria-pressed', String(state.selected.has(i))));
-            summary.textContent = `${items.length} selected → ${Math.floor(items.length / n)} complete rows × ${n} columns`
+            summary.textContent = standalone ? `${items.length} image(s) selected.`
+                : `${items.length} selected → ${Math.floor(items.length / n)} complete rows × ${n} columns`
                 + (items.length % n ? `; ${items.length % n} image(s) in an incomplete row. Every column needs the same number of images.` : '.')
                 + (namingError ? ` ${namingError}` : '');
-            preview.style.gridTemplateColumns = `repeat(${n}, minmax(110px, 1fr))`;
+            preview.style.gridTemplateColumns = standalone ? 'repeat(auto-fill, minmax(110px, 1fr))' : `repeat(${n}, minmax(110px, 1fr))`;
             preview.replaceChildren(...items.map((item, i) => element('figure', {}, thumbnail(item),
-                element('figcaption', { textContent: `${String(Math.floor(i / n) + 1).padStart(4, '0')} · ${labels[i % n]}` }))));
+                element('figcaption', { textContent: standalone ? `Image ${i + 1}` : `${String(Math.floor(i / n) + 1).padStart(4, '0')} · ${labels[i % n]}` }))));
         }
 
         function showArea(area) {
@@ -1020,23 +1172,32 @@
 
         async function run(kind) {
             if (state.active) return;
-            const items = selectedImages(), labels = getNames();
+            const standalone = destination.value !== 'slowpics';
+            const items = selectedImages(), labels = standalone ? ['Image'] : getNames();
             let tmdbId = '';
             try {
                 requireCompleteRows(items, labels);
                 fileColumns(labels);
-                if (kind === 'upload' && !state.job) tmdbId = tmdbReference(tmdbInput.value);
+                if (kind === 'upload') {
+                    if (standalone) hostKey(destination.value);
+                    else if (!state.job) tmdbId = tmdbReference(tmdbInput.value);
+                }
             }
             catch (error) { status.textContent = error.message; return; }
             if (tmdbSearchController) resetTMDBResults();
             setTMDBResultsOpen(false);
             const controller = new AbortController();
             state.active = controller;
-            if (kind === 'upload') result.replaceChildren();
+            if (kind === 'upload' && !standalone) result.replaceChildren();
             const report = message => { status.textContent = message; };
             debug('transfer-start', { kind, images: items.length, columns: labels.length, completed: kind === 'upload' ? state.job?.done || 0 : 0 });
             try {
-                if (kind === 'upload') {
+                if (kind === 'upload' && standalone) {
+                    state.job ||= { destination: destination.value, items, nsfw: nsfw.checked, done: 0, pending: null, results: [] };
+                    update();
+                    await uploadImages(state.job, controller.signal, report, renderImageResults);
+                    report(`Complete — ${state.job.done} images uploaded.`);
+                } else if (kind === 'upload') {
                     state.job ||= { items, names: labels, title: title.value.trim() || 'Comparison', public: publicInput.checked, tmdbId,
                         browserId: browserID(), done: 0, collection: null, pending: null };
                     update();
@@ -1054,6 +1215,7 @@
             } catch (error) {
                 const progress = kind === 'upload' && state.job ? ` ${state.job.done}/${state.job.items.length} uploaded.` : '';
                 report(`${error.name === 'AbortError' ? 'Cancelled.' : error.message}${progress}`
+                    + (kind === 'upload' && standalone && state.job ? ' Completed results are kept. Retry resumes at the first unconfirmed image; a lost response may cause a duplicate.' : '')
                     + (kind === 'upload' && state.job?.collection ? ' The remote collection is incomplete. After resolving the error, retry upload to resume, or start over to change the selection.' : ''));
             } finally {
                 state.active = null;
@@ -1086,7 +1248,7 @@
             if (dialog.open) dialog.focus();
             else picker.querySelector('button').focus();
         }, { signal: lifetime.signal });
-        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.1.11',
+        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.2.0',
             manager: typeof GM_info === 'object' ? GM_info.scriptHandler : 'unknown',
             managerVersion: typeof GM_info === 'object' ? GM_info.version : 'unknown' });
         chooseArea();
