@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         comps-rehost
 // @namespace    https://github.com/gizeto
-// @version      1.1.8
+// @version      1.1.11
 // @description  Select nearby comparison images, upload to slow.pics, or download originals on demand.
 // @author       gizeto
 // @match        http://*/*
@@ -36,7 +36,7 @@
     function registerKeyMenu() {
         const storedKey = GM_getValue('tmdb_api_key', '');
         const configured = typeof storedKey === 'string' && !!storedKey.trim();
-        keyMenuId = GM_registerMenuCommand(`⚙ TMDB API key: ${configured ? 'configured' : 'not set'}`, configureTMDB,
+        keyMenuId = GM_registerMenuCommand(`TMDB API key: ${configured ? 'configured' : 'not set'}`, configureTMDB,
             keyMenuId === undefined ? {} : { id: keyMenuId });
     }
 
@@ -639,26 +639,46 @@
             dialog::backdrop { background: #0009; }
             .picker { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 2147483647; box-shadow: 0 4px 20px #0008; }
             [hidden] { display: none !important; }
-            h2, p { margin: 0 0 10px; }
+            h2, h3, p { margin: 0 0 10px; }
             fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
-            button, input, select { font: inherit; color: inherit; background: #303640; border: 1px solid #7d8796; border-radius: 4px; padding: 5px 9px; }
+            button, input, select { font: inherit; color: inherit; background: #303640; border: 1px solid #7d8796; border-radius: 4px; padding: 7px 10px; }
             button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
             button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #76bcff; outline-offset: 2px; }
             input[type=number] { width: 72px; } input[type=checkbox] { accent-color: #76bcff; }
             .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-            .collection { display: flex; align-items: center; gap: 8px; flex: 1 1 560px; min-width: 0; }
-            .collection input { flex: 1; width: 100%; min-width: 0; }
+            .settings-section { padding: 14px; margin-bottom: 14px; border: 1px solid #424852; border-radius: 6px; background: #252930; }
+            .section-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+            .section-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+            .section-header .controls { margin: 0; }
+            .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+            .field-label { color: #c4cbd6; font-size: 12px; font-weight: 500; }
+            .field input:not([type=checkbox]), .field select { width: 100%; min-width: 0; }
+            .collection-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 16px; }
+            .visibility { display: flex; align-items: center; gap: 7px; min-height: 37px; white-space: nowrap; }
+            .visibility input { margin: 0; }
+            .tmdb-search-fields { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-bottom: 12px; max-width: 716px; }
+            .tmdb-link-fields { display: grid; grid-template-columns: minmax(0, 1fr) 220px; align-items: start; gap: 16px; max-width: 716px; }
+            .tmdb-link-fields:has(.tmdb-result-field[hidden]) { grid-template-columns: minmax(0, 220px); }
+            .field-heading { display: flex; align-items: center; gap: 6px; min-height: 22px; }
+            .tmdb-status:empty { display: none; }
+            .tmdb-status { margin: 10px 0 0; }
+            .image-fields { display: grid; grid-template-columns: 80px 190px minmax(0, 1fr); align-items: start; gap: 12px; margin-bottom: 14px; }
+            .selection-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+            .selection-toolbar .field-label { margin-right: auto; }
             .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
             .dialog-header h2 { margin: 0; }
             .close { flex-shrink: 0; width: 32px; height: 32px; padding: 0; border: 0; background: transparent; font-size: 26px; line-height: 1; }
             .help-controls { position: relative; }
-            .help { display: inline-flex; }
+            .help { display: inline-flex; position: relative; }
             .help-icon { width: 22px; height: 22px; padding: 0; border-radius: 50%; line-height: 1; cursor: help; }
             .help-text { display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 2; width: min(320px, 70vw); padding: 8px 10px; border: 1px solid #7d8796; border-radius: 4px; background: #303640; box-shadow: 0 2px 8px #0006; }
             .help:hover .help-text, .help:focus-within .help-text { display: block; }
-            .names input { width: 155px; }
+            .selection-toolbar .help-text { left: auto; right: 0; }
+            .names { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+            .names input { width: 100%; min-width: 0; }
             .tmdb-dropdown { position: relative; width: 480px; max-width: 100%; }
-            .tmdb-trigger { width: 100%; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+            .tmdb-trigger { width: 100%; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-right: 28px; }
+            .tmdb-dropdown::after { content: '▾'; position: absolute; right: 10px; top: 8px; pointer-events: none; color: #c4cbd6; }
             .tmdb-results { position: absolute; top: 100%; left: 0; z-index: 3; width: 100%; height: 280px; overflow-y: auto; overscroll-behavior: contain; background: #202329; border: 1px solid #7d8796; border-radius: 4px; }
             .tmdb-option { display: flex; align-items: center; gap: 10px; width: 100%; height: 92px; text-align: left; border: 0; border-radius: 0; }
             .tmdb-option[aria-selected=true] { background: #294c70; }
@@ -669,16 +689,26 @@
             .tmdb-country { font-size: 12px; color: #c4cbd6; }
             .grid { display: grid; gap: 8px; margin-bottom: 14px; }
             .candidates { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); max-height: 35vh; overflow: auto; }
+            .candidates:last-child { margin-bottom: 0; }
             .image { min-width: 0; padding: 4px; } .image[aria-pressed=true] { border: 2px solid #76bcff; background: #294c70; }
             img { display: block; width: 100%; height: 85px; object-fit: contain; background: #111; }
             .preview { overflow: auto; } .preview .grid { min-width: min-content; } .preview figure { margin: 0; min-width: 110px; }
             figcaption { overflow-wrap: anywhere; } .status { white-space: pre-wrap; overflow-wrap: anywhere; }
             a { color: #9cceff; }
+            @media (max-width: 720px) {
+                .collection-fields, .tmdb-link-fields { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+                .image-fields { grid-template-columns: 80px minmax(0, 1fr); }
+                .column-names { grid-column: 1 / -1; }
+                .tmdb-search-fields { grid-template-columns: 100px minmax(0, 1fr); }
+                .tmdb-search-fields > button { grid-column: 1 / -1; }
+                .settings-section { padding: 12px; }
+            }
         ` });
         const picker = element('div', { className: 'picker', hidden: true }, 'Click the comparison area. Escape cancels. ',
             button('Cancel', close));
         const dialog = element('dialog');
         const settings = element('fieldset');
+        const field = (label, control) => element('label', { className: 'field' }, element('span', { className: 'field-label', textContent: label }), control);
         const title = element('input', { value: 'Comparison', ariaLabel: 'Collection name',
             oninput: () => { state.customTitle = true; } });
         const columns = element('input', { type: 'number', min: '1', value: '2', ariaLabel: 'Number of columns' });
@@ -707,6 +737,7 @@
             if (!tmdbResults.hidden) (tmdbResults.querySelector('[aria-selected=true]') || tmdbResults.firstElementChild)?.focus();
         });
         tmdbResultsButton.className = 'tmdb-trigger';
+        tmdbResultsButton.id = 'tmdb-results-trigger';
         tmdbResultsButton.disabled = true;
         tmdbResultsButton.setAttribute('aria-haspopup', 'listbox');
         tmdbResultsButton.setAttribute('aria-controls', tmdbResults.id);
@@ -724,15 +755,16 @@
                 : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
             options[next].focus();
         } }, tmdbResultsButton, tmdbResults);
-        const tmdbSearchStatus = element('p', { role: 'status' });
+        const tmdbSearchStatus = element('p', { role: 'status', className: 'tmdb-status' });
         const tmdbSearchSection = element('div', { hidden: !tmdbAPIKey },
-            element('div', { className: 'controls' }, element('label', {}, 'Search for ', tmdbType), tmdbQuery, tmdbSearchButton),
-            element('div', { className: 'controls' }, element('span', { textContent: 'Search results' }), tmdbDropdown), tmdbSearchStatus);
+            element('div', { className: 'tmdb-search-fields' }, field('Media type', tmdbType), field('Title', tmdbQuery), tmdbSearchButton));
+        const tmdbResultField = element('div', { className: 'field tmdb-result-field', hidden: !tmdbAPIKey },
+            element('label', { className: 'field-label field-heading', htmlFor: tmdbResultsButton.id, textContent: 'Search results' }), tmdbDropdown);
         const tmdbSearchHint = hint('tmdb-search-help', 'TMDB search help',
             'Set the TMDB API key from the Tampermonkey menu to enable title search, or enter a TMDB id manually.');
         tmdbSearchHint.hidden = !!tmdbAPIKey;
-        const tmdbError = element('p', { role: 'status', hidden: true });
-        const names = element('div', { className: 'controls names' });
+        const tmdbError = element('p', { role: 'status', className: 'tmdb-status', hidden: true });
+        const names = element('div', { className: 'names', role: 'group', ariaLabel: 'Column names' });
         const scope = element('p');
         const candidates = element('div', { className: 'grid candidates' });
         const summary = element('p');
@@ -755,16 +787,28 @@
             status.textContent = 'Previous remote collections are kept. You can change the selection now.';
             update();
         });
-        settings.append(element('div', { className: 'controls' }, expand, button('Choose another area', chooseArea)), scope,
-            element('div', { className: 'controls' }, element('label', { className: 'collection' }, 'Collection ', title),
-                element('label', {}, 'Columns ', columns), element('label', {}, publicInput, ' Public on slow.pics')),
-            tmdbSearchSection,
-            element('div', { className: 'controls help-controls' }, element('label', {}, 'TMDB id ', tmdbInput), tmdbSearchHint),
-            tmdbError, names,
-            element('div', { className: 'controls help-controls' }, element('label', {}, 'Image order ', imageOrder), button('Select all', () => {
+        tmdbInput.id = 'tmdb-reference';
+        settings.append(
+            element('section', { className: 'settings-section' },
+                element('div', { className: 'section-header' }, element('h3', { textContent: 'Collection' })),
+                element('div', { className: 'collection-fields' }, field('Collection name', title),
+                    element('label', { className: 'visibility' }, publicInput, 'Public on slow.pics'))),
+            element('section', { className: 'settings-section' },
+                element('div', { className: 'section-header' }, element('h3', { textContent: 'TMDB link' })),
+                tmdbSearchSection,
+                element('div', { className: 'tmdb-link-fields' }, tmdbResultField,
+                    element('div', { className: 'field' }, element('div', { className: 'field-heading' },
+                        element('label', { className: 'field-label', htmlFor: tmdbInput.id, textContent: 'TMDB id' }), tmdbSearchHint), tmdbInput)),
+                tmdbSearchStatus, tmdbError),
+            element('section', { className: 'settings-section' },
+                element('div', { className: 'section-header' }, element('h3', { textContent: 'Images' }),
+                    element('div', { className: 'controls' }, expand, button('Choose another area', chooseArea))), scope,
+                element('div', { className: 'image-fields' }, field('Columns', columns), field('Image order', imageOrder),
+                    element('div', { className: 'field column-names' }, element('span', { className: 'field-label', textContent: 'Column names' }), names)),
+                element('div', { className: 'selection-toolbar' }, element('span', { className: 'field-label', textContent: 'Select images' }), button('Select all', () => {
                 state.selected = new Set(state.images.map((_, i) => i)); state.anchor = null; update();
             }), button('Clear', () => { state.selected.clear(); state.anchor = null; update(); }),
-                hint('image-selection-help', 'Image selection help', 'Click to toggle · Shift-click to select a range · Image order follows the selected images on the page: row by row, or all of column 1, then column 2, etc.')), candidates);
+                hint('image-selection-help', 'Image selection help', 'Click to toggle · Shift-click to select a range · Image order follows the selected images on the page: row by row, or all of column 1, then column 2, etc.')), candidates));
         dialog.append(element('div', { className: 'dialog-header' }, element('h2', { textContent: 'Comparison images' }),
             element('button', { type: 'button', className: 'close', textContent: '×', ariaLabel: 'Close', title: 'Close', onclick: close })),
             settings, summary, element('div', { className: 'preview' }, preview),
@@ -788,6 +832,7 @@
             tmdbAPIKey = typeof storedKey === 'string' ? storedKey.trim() : '';
             resetTMDBResults();
             tmdbSearchSection.hidden = !tmdbAPIKey;
+            tmdbResultField.hidden = !tmdbAPIKey;
             tmdbSearchHint.hidden = !!tmdbAPIKey;
         };
 
@@ -1041,7 +1086,7 @@
             if (dialog.open) dialog.focus();
             else picker.querySelector('button').focus();
         }, { signal: lifetime.signal });
-        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.1.8',
+        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.1.11',
             manager: typeof GM_info === 'object' ? GM_info.scriptHandler : 'unknown',
             managerVersion: typeof GM_info === 'object' ? GM_info.version : 'unknown' });
         chooseArea();
