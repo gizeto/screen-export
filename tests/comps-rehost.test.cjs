@@ -195,6 +195,49 @@ async function domTests(script) {
         equal(api.columnNames('Source\u00a0\u00a0https://images.test/a.png'), null);
         equal(api.columnNames('[color=red]SOURCE[/color]\u00a0\u00a0ENCODE'), null);
     });
+    await test('spaced hyphens separate names without splitting hyphenated names', () => {
+        equal(api.columnNames('SOURCE \u00a0 - \u00a0 ENCODE \u00a0 - \u00a0 GroupA \u00a0 - \u00a0 GroupB'),
+            ['SOURCE', 'ENCODE', 'GroupA', 'GroupB']);
+        equal(api.columnNames('WEB-DL - Old GroupA - GroupB-Encode'), ['WEB-DL', 'Old GroupA', 'GroupB-Encode']);
+        equal(api.columnNames('WEB-DL'), null);
+        equal(api.columnNames('Source - '), null);
+        equal(api.columnNames('Source - - Encode'), null);
+        equal(api.columnNames('[color=red]Source[/color] - Encode'), null);
+        equal(api.columnNames('Source - https://images.test/a.png'), null);
+    });
+    await test('commas separate column names and reject empty columns', () => {
+        equal(api.columnNames('Source, GroupA, GroupB'), ['Source', 'GroupA', 'GroupB']);
+        equal(api.columnNames('Source,Old GroupA,WEB-DL'), ['Source', 'Old GroupA', 'WEB-DL']);
+        equal(api.columnNames('Source, '), null);
+        equal(api.columnNames('Source,,Encode'), null);
+        equal(api.columnNames('Source, https://images.test/a.png'), null);
+        equal(api.columnNames('[color=red]Source[/color], Encode'), null);
+    });
+    await test('hyphen headings detect columns and comparison boundaries across wrappers like ex11', () => {
+        for (const tag of ['pre', 'div', 'section']) {
+            const root = fixture(`<${tag}><div align="center">SOURCE &nbsp; - &nbsp; ENCODE &nbsp; - &nbsp; <span>GroupA</span> &nbsp; - &nbsp; GroupB</div></${tag}><br>
+                <div align="center">${Array.from({ length: 24 }, (_, i) => img(`hyphen-${i}`)).join(' ')}</div>
+                <${tag}>\nFiltered Source - GroupC-Encode\n</${tag}><div>${img('next-a')}${img('next-b')}</div>`);
+            const images = [...root.querySelectorAll('img')];
+            equal(api.scan(root, images[0]).headings.map(heading => heading.names),
+                [['SOURCE', 'ENCODE', 'GroupA', 'GroupB'], ['Filtered Source', 'GroupC-Encode']]);
+            for (const target of [root, ...images.slice(0, 24)]) {
+                const area = api.detect(target);
+                equal(area.names, ['SOURCE', 'ENCODE', 'GroupA', 'GroupB']);
+                equal(area.images.map(item => item.source), images.slice(0, 24).map(image => image.src));
+            }
+            equal(api.detect(images[24]).names, ['Filtered Source', 'GroupC-Encode']);
+            equal(api.detect(images[24]).images.length, 2);
+        }
+        equal(calls.length, 0);
+    });
+    await test('code and raw BBCode are not column headings', () => {
+        for (const content of ['<code>Source - Encode</code>', '[color=red]Source[/color] - Encode']) {
+            const root = fixture(`<pre>${content}</pre><div>${img('a')}${img('b')}</div>`);
+            equal(api.scan(root, root).headings, []);
+            equal(api.detect(root.querySelector('img')).names, []);
+        }
+    });
     await test('nonbreaking-space headings split comparison sections and detect all four columns', () => {
         const gap = ' &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; ';
         const root = fixture(`<center><font size="2"><br>
@@ -222,6 +265,37 @@ async function domTests(script) {
         equal(first.images.map(item => item.source), ['https://images.test/same.png', 'https://images.test/same.png']);
         equal(second.names, ['Other', 'Encode']);
         equal(second.images.length, 2);
+    });
+    await test('ex12 comma heading stays local to its screenshots instead of borrowing technical labels', () => {
+        for (const heading of ['Source, GroupA, GroupB', 'Screenshots']) {
+            const root = fixture(`<table><tbody><tr><td>
+                <div>Technical Information - <a href="/mediainfo">Mediainfo log</a></div>
+                <table><tr><th>Runtime</th><td>1:43:00</td></tr></table>
+                <div>Subtitles</div>${img('flag-a')}${img('flag-b')}
+                </td></tr><tr><td><p>Quote</p><table><tr><td>
+                <strong>GroupName PRESENTS<br>Technical Information:<br>BITRATE: 12.8 Mb/s<br>
+                NOTES:<br>Banding fixed.<br><br><div align="center">${heading}</div></strong><br>
+                <div class="gallery" align="center">${Array.from({ length: 30 }, (_, i) => img(`screen-${i}`)).join(' ')}</div>
+                </td></tr></table></td></tr>
+                <tr><td>Other copies${img('other-copy')}</td></tr></tbody></table>`);
+            const gallery = root.querySelector('.gallery');
+            const images = [...gallery.querySelectorAll('img')];
+            for (const target of [gallery, ...images]) {
+                const area = api.detect(target);
+                equal(area.names, heading === 'Screenshots' ? [] : ['Source', 'GroupA', 'GroupB']);
+                equal(area.images.map(item => item.source), images.map(image => image.src));
+            }
+        }
+    });
+    await test('nearby names remain available across blank lines, wrappers and matching image captions', () => {
+        const root = fixture(`<section><b>Filtered Source - GroupA</b><br><br>
+            <div><figure><figcaption>Filtered Source</figcaption>${img('a')}</figure>
+            <figure><figcaption>GroupA</figcaption>${img('b')}</figure></div></section>`);
+        for (const target of [root, ...root.querySelectorAll('img')]) {
+            const area = api.detect(target);
+            equal(area.names, ['Filtered Source', 'GroupA']);
+            equal(area.images.length, 2);
+        }
     });
     await test('hidden images and lazy sources remain candidates; known small decorations are excluded', () => {
         const root = fixture(`<section>Source vs Encode<br><img width="16" height="16" src="https://images.test/icon.png">
