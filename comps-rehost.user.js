@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         comps-rehost
 // @namespace    https://github.com/gizeto
-// @version      1.2.0
+// @version      1.2.1
 // @description  Select images, upload comparisons to slow.pics or originals to PTScreens, ImgBB and Pixhost, or download originals.
 // @author       gizeto
 // @match        http://*/*
@@ -571,6 +571,55 @@
                 job.pending = null;
             }
             return `${SLOW}/c/${job.collection.key}`;
+        }
+
+        function comparisonPageURLs(html, job) {
+            // The saved slow.pics page embeds JSON in a single-line `var collection = ...;`.
+            // Parse the data only: never execute the page's scripts or load its resources.
+            const declarations = [...inertHTML(html).querySelectorAll('script:not([src])')]
+                .flatMap(script => [...script.textContent.matchAll(/^\s*(?:var|let|const)\s+collection\s*=\s*(\{[^\r\n]*\})\s*;[ \t]*$/gm)]);
+            let collection;
+            try {
+                if (declarations.length !== 1) throw new Error();
+                collection = JSON.parse(declarations[0][1]);
+            } catch { throw new Error('slow.pics did not return readable comparison data for BBCode.'); }
+            const rows = collection?.comparisons;
+            const count = job.items.length / job.names.length;
+            if (!Array.isArray(rows) || rows.length !== count
+                || !(collection.key === job.collection.key || rows.some(row => row?.key === job.collection.key))) {
+                throw new Error('The returned slow.pics collection does not match this upload.');
+            }
+            const urls = [];
+            for (let index = 0; index < count; index++) {
+                const matching = rows.filter(row => row?.name === String(index + 1).padStart(4, '0'));
+                const images = matching[0]?.images;
+                if (matching.length !== 1 || !Array.isArray(images) || images.length !== job.names.length
+                    || !images.every((image, col) => image?.name === job.names[col]
+                        && typeof image.publicFileName === 'string'
+                        && /^[\w-]+\.(?:png|jpe?g|webp|gif|bmp|avif)$/i.test(image.publicFileName))) {
+                    throw new Error('Could not match all uploaded images to their comparison rows and columns.');
+                }
+                urls.push(...images.map(image => `https://i.slow.pics/${image.publicFileName}`));
+            }
+            return urls;
+        }
+
+        async function comparisonImageURLs(job, signal) {
+            if (!job.collection || job.done !== job.items.length) throw new Error('Finish uploading before copying comparison BBCode.');
+            const response = await slowRequest(`/c/${job.collection.key}`, { headers: { Accept: 'text/html' } }, signal);
+            return comparisonPageURLs(response.responseText, job);
+        }
+
+        function comparisonBBCode(job, urls) {
+            if (job.done !== job.items.length || urls.length !== job.items.length
+                || urls.some(url => !resultURL(url) || new URL(url).hostname !== 'i.slow.pics')) {
+                throw new Error('Could not match all uploaded images to the comparison.');
+            }
+            if (job.names.some(name => /[\[\],\r\n]/.test(name))) {
+                throw new Error('Comparison BBCode requires column names without brackets, commas or line breaks.');
+            }
+            return [`[url=${SLOW}/c/${job.collection.key}]${job.names.join(' vs ')} | Slowpoke Pics[/url]`,
+                `[comparison=${job.names.join(', ')}]`, ...urls, '[/comparison]'].join('\n');
         }
 
         const imageHosts = {
@@ -1203,11 +1252,14 @@
                     update();
                     const url = await upload(state.job, controller.signal, report);
                     report(`Complete — ${state.job.done} images uploaded.`);
+                    const completedJob = state.job;
+                    const comparisonOutput = element('textarea', { readOnly: true, hidden: true, ariaLabel: 'Comparison BBCode' });
+                    const comparisonCopy = button('Copy BBCode', () => copyComparisonBBCode(completedJob, comparisonOutput, comparisonCopy));
                     result.append(element('a', { href: url, target: '_blank', rel: 'noopener noreferrer', textContent: url }),
                         button('Copy link', async () => {
                             try { await navigator.clipboard.writeText(url); report('Comparison link copied.'); }
                             catch { report('Clipboard access was denied. Select and copy the displayed link.'); }
-                        }));
+                        }), comparisonCopy, comparisonOutput);
                 } else {
                     update();
                     await download(items, labels, controller.signal, report);
@@ -1219,6 +1271,37 @@
                     + (kind === 'upload' && state.job?.collection ? ' The remote collection is incomplete. After resolving the error, retry upload to resume, or start over to change the selection.' : ''));
             } finally {
                 state.active = null;
+                if (host.isConnected) update();
+            }
+        }
+
+        async function copyComparisonBBCode(job, output, copyButton) {
+            if (state.active || state.job !== job) return;
+            const controller = new AbortController();
+            state.active = controller;
+            copyButton.disabled = true;
+            update();
+            try {
+                if (!job.bbcode) {
+                    status.textContent = 'Loading uploaded image URLs for BBCode…';
+                    const urls = await comparisonImageURLs(job, controller.signal);
+                    job.bbcode = comparisonBBCode(job, urls);
+                }
+                checkAbort(controller.signal);
+                output.value = job.bbcode;
+                output.hidden = false;
+                try {
+                    await navigator.clipboard.writeText(job.bbcode);
+                    status.textContent = 'Comparison BBCode copied.';
+                } catch {
+                    status.textContent = 'Clipboard access was denied. Select and copy the comparison BBCode below.';
+                }
+            } catch (error) {
+                status.textContent = `Upload complete. ${error.name === 'AbortError' ? 'BBCode lookup cancelled.' : error.message}`
+                    + ' The comparison link is still available. Click Copy BBCode to try again.';
+            } finally {
+                state.active = null;
+                copyButton.disabled = false;
                 if (host.isConnected) update();
             }
         }
@@ -1248,7 +1331,7 @@
             if (dialog.open) dialog.focus();
             else picker.querySelector('button').focus();
         }, { signal: lifetime.signal });
-        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.2.0',
+        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.2.1',
             manager: typeof GM_info === 'object' ? GM_info.scriptHandler : 'unknown',
             managerVersion: typeof GM_info === 'object' ? GM_info.version : 'unknown' });
         chooseArea();
