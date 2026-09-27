@@ -90,7 +90,7 @@ async function domTests(script, examples, pixhostHTML) {
             tmdbQuery, tmdbSearchSection, tmdbSearchHint, imageOrder, selectedImages, suggestedMediaType,
             tmdbResults, tmdbResultsButton, tmdbSearchButton, tmdbSearchStatus,
             destination, nsfw, width, widthError, bbcode, copyBBCode, renderImageResults, imageBBCode,
-            imageUploadResult, uploadImage, uploadImages, hostKey, update };
+            imageUploadResult, uploadImage, uploadImages, hostKey, update, comparisonBBCode, comparisonPageURLs, comparisonImageURLs, copyComparisonBBCode };
         chooseArea();
     }
     })();`);
@@ -750,6 +750,20 @@ async function domTests(script, examples, pixhostHTML) {
         ok(uploads.every(call => !call.data.has('tmdbId')));
         ok(uploads.every(call => call.cookiePartition.topLevelSite === 'https://slow.pics' && call.anonymous === false));
     });
+    await test('comparison BBCode matches the requested format and preserves row-major image order', async () => {
+        const job = { done: 2, items: [{}, {}], names: ['GroupA', 'GroupB'], collection: { key: 'example' } };
+        const urls = ['https://i.slow.pics/first.png', 'https://i.slow.pics/second.webp'];
+        equal(api.comparisonBBCode(job, urls), '[url=https://slow.pics/c/example]GroupA vs GroupB | Slowpoke Pics[/url]\n'
+            + '[comparison=GroupA, GroupB]\nhttps://i.slow.pics/first.png\nhttps://i.slow.pics/second.webp\n[/comparison]');
+        const many = { ...job, done: 6, items: Array(6).fill({}), names: ['GroupA', 'GroupB', 'GroupC'] };
+        const ordered = Array.from({ length: 6 }, (_, i) => `https://i.slow.pics/image${i}.png`);
+        equal(api.comparisonBBCode(many, ordered).split('\n').slice(2, -1), ordered);
+        await rejects(() => api.comparisonBBCode({ ...job, done: 1 }, urls), /match all/);
+        await rejects(() => api.comparisonBBCode(job, urls.slice(0, 1)), /match all/);
+        await rejects(() => api.comparisonBBCode(job, [urls[0], 'javascript:alert(1)']), /match all/);
+        await rejects(() => api.comparisonBBCode(job, [urls[0], 'https://images.test/original.png']), /match all/);
+        await rejects(() => api.comparisonBBCode({ ...job, names: ['GroupA, GroupB', 'GroupC'] }, urls), /column names/);
+    });
     await test('malformed comparison responses and unsuccessful image acknowledgements never report success', async () => {
         handler = options => options.method === 'GET' ? { responseText: '<meta name="csrf-token" content="token">' }
             : { responseText: JSON.stringify({ collectionUuid: 'c', key: 'k', images: [['only-one']] }) };
@@ -1183,6 +1197,134 @@ async function domTests(script, examples, pixhostHTML) {
         const root = fixture(`<div>${img('single')}</div>`);
         equal(rehost.detect(root.querySelector('img')).images.length, 1);
         rehost.close();
+    });
+    launchFromMenu();
+    const comparisonAPI = rehost;
+    // Sanitized version of the embedded data in tmp/slowpics_page.html.
+    const comparisonData = {
+        key: 'collection-key', name: 'Example Film - GroupA vs GroupB',
+        comparisons: [
+            { key: 'first-row', name: '0001', images: [
+                { name: 'GroupA', publicFileName: 'first-a.png' }, { name: 'GroupB', publicFileName: 'first-b.webp' }
+            ] },
+            { key: 'second-row', name: '0002', images: [
+                { name: 'GroupA', publicFileName: 'second-a.jpg' }, { name: 'GroupB', publicFileName: 'second-b.png' }
+            ] }
+        ]
+    };
+    const pageHTML = data => `<img src="https://i.slow.pics/t/decoy.png">
+        <script src="https://untrusted.test/script.js"></script><script>
+        var messages = {"message":"unrelated"};
+        var cdnUrl = "https:\\/\\/i.slow.pics\\/";
+        var collection = ${JSON.stringify(data)};
+        var currentComparisonIndex = 0;
+        globalThis.untrustedExecuted = true;
+        </script>`;
+    const comparisonJob = { collection: { key: 'first-row' }, names: ['GroupA', 'GroupB'], items: [{}, {}, {}, {}], done: 4 };
+    const expectedURLs = ['first-a.png', 'first-b.webp', 'second-a.jpg', 'second-b.png'].map(name => `https://i.slow.pics/${name}`);
+    await test('saved-page data yields original comparison URLs in upload order without executing scripts', () => {
+        equal(comparisonAPI.comparisonPageURLs(pageHTML(comparisonData), comparisonJob), expectedURLs);
+        equal(comparisonAPI.comparisonPageURLs(pageHTML({ ...comparisonData, comparisons: [...comparisonData.comparisons].reverse() }), comparisonJob), expectedURLs);
+        equal(comparisonAPI.comparisonPageURLs(pageHTML(comparisonData), { ...comparisonJob, collection: { key: 'collection-key' } }), expectedURLs);
+        equal(globalThis.untrustedExecuted, undefined);
+    });
+    await test('comparison page parsing rejects missing, ambiguous, unsafe and mismatched data', async () => {
+        await rejects(() => comparisonAPI.comparisonPageURLs('<html>Login required</html>', comparisonJob), /readable comparison data/);
+        await rejects(() => comparisonAPI.comparisonPageURLs('<script>var collection = {bad};</script>', comparisonJob), /readable comparison data/);
+        await rejects(() => comparisonAPI.comparisonPageURLs(pageHTML(comparisonData) + pageHTML(comparisonData), comparisonJob), /readable comparison data/);
+        await rejects(() => comparisonAPI.comparisonPageURLs(pageHTML(comparisonData), { ...comparisonJob, collection: { key: 'different' } }), /does not match/);
+        for (const change of [
+            data => data.comparisons.pop(),
+            data => { data.comparisons[1].name = '0001'; },
+            data => data.comparisons[0].images.reverse(),
+            data => data.comparisons[0].images.pop(),
+            data => { data.comparisons[0].images[0].publicFileName = '../t/thumb.png'; },
+            data => { data.comparisons[0].images[0].publicFileName = 'https://images.test/a.png'; },
+            data => { data.comparisons[0].images[0].publicFileName = null; }
+        ]) {
+            const data = JSON.parse(JSON.stringify(comparisonData)); change(data);
+            await rejects(() => comparisonAPI.comparisonPageURLs(pageHTML(data), comparisonJob), /match/);
+        }
+    });
+    await test('completed slow.pics uploads expose Copy BBCode and fetch only on demand, then cache it', async () => {
+        calls.length = 0;
+        comparisonAPI.showArea({ root: null, names: ['GroupA', 'GroupB'], images: Array.from({ length: 4 }, (_, i) => ({
+            source: `https://images.test/comp-${i}.png`, preview: `https://images.test/comp-${i}.png`
+        })) });
+        comparisonAPI.candidates.children[0].click();
+        comparisonAPI.candidates.children[3].dispatchEvent(new MouseEvent('click', { shiftKey: true }));
+        GM_cookie = { list(options, callback) { callback([{ name: 'XSRF-TOKEN', value: 'safe-token' }]); } };
+        handler = options => {
+            if (options.url.endsWith('/upload/comparison')) return { responseText: JSON.stringify({ collectionUuid: 'collection-id', key: 'first-row', images: [['a', 'b'], ['c', 'd']] }) };
+            if (options.url.endsWith('/upload/image')) return { responseText: 'OK' };
+            if (options.url === 'https://slow.pics/c/first-row') return { responseText: pageHTML(comparisonData) };
+            return imageResponse();
+        };
+        await comparisonAPI.run('upload');
+        const job = comparisonAPI.state.job;
+        equal(job.done, 4);
+        ok(!calls.some(call => call.url.includes('/c/')));
+        const copy = [...comparisonAPI.result.querySelectorAll('button')].find(node => node.textContent === 'Copy BBCode');
+        const output = comparisonAPI.result.querySelector('textarea');
+        ok(copy && output.hidden);
+        let copied;
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { copied = value; } } });
+        const previous = calls.length;
+        await copy.onclick();
+        equal(calls.length, previous + 1);
+        equal(calls.at(-1).url, 'https://slow.pics/c/first-row');
+        equal(calls.at(-1).headers.Accept, 'text/html');
+        equal(calls.at(-1).cookiePartition.topLevelSite, 'https://slow.pics');
+        equal(calls.at(-1).anonymous, false);
+        equal(copied, comparisonAPI.comparisonBBCode(job, expectedURLs));
+        equal(output.value, copied);
+        ok(!output.hidden && !copy.disabled);
+        ok(!copied.includes('[img'));
+        await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        equal(calls.length, previous + 1);
+        ok(!comparisonAPI.diagnostics.join('').includes('first-a.png'));
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied'); } } });
+        await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        ok(comparisonAPI.status.textContent.includes('Select and copy'));
+        equal(output.value, copied);
+    });
+    await test('BBCode lookup failure, rate limiting and cancellation keep uploads complete and allow lookup-only retry', async () => {
+        const job = comparisonAPI.state.job;
+        const copy = [...comparisonAPI.result.querySelectorAll('button')].find(node => node.textContent === 'Copy BBCode');
+        const output = comparisonAPI.result.querySelector('textarea');
+        delete job.bbcode;
+        calls.length = 0;
+        handler = () => ({ status: 429, responseHeaders: 'Retry-After: 120' });
+        await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        equal(job.done, 4);
+        ok(comparisonAPI.uploadButton.disabled);
+        ok(comparisonAPI.result.querySelector('a').href === 'https://slow.pics/c/first-row');
+        ok(comparisonAPI.status.textContent.startsWith('Upload complete.'));
+        await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        equal(calls.length, 1);
+        comparisonAPI.retryAfter.clear();
+        handler = () => ({ responseText: 'unreadable' });
+        await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        equal(job.bbcode, undefined);
+        let entered;
+        const pending = new Promise(resolve => { entered = resolve; });
+        handler = () => { entered(); return null; };
+        const active = comparisonAPI.copyComparisonBBCode(job, output, copy);
+        await pending;
+        comparisonAPI.state.active.abort();
+        await active;
+        ok(comparisonAPI.status.textContent.includes('lookup cancelled'));
+        ok(!copy.disabled);
+        handler = () => ({ responseText: pageHTML(comparisonData) });
+        await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        ok(job.bbcode.includes('[comparison=GroupA, GroupB]'));
+        ok(calls.every(call => call.method === 'GET' && call.url === 'https://slow.pics/c/first-row'));
+        comparisonAPI.resetButton.click();
+        const count = calls.length;
+        await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        equal(calls.length, count);
+        equal(comparisonAPI.result.children.length, 0);
+        comparisonAPI.close();
     });
     return results;
 }

@@ -56,7 +56,19 @@ Transfers run sequentially. **Cancel transfer** stops further requests; complete
 
 Downloads are individual files in the browser's download directory. With slow.pics selected, names follow its automatic grouping format: `Source0001.png`, `Encode0001.png`, `Source0002.png`, `Encode0002.png`. The column name comes first and the shared comparison number is padded to at least four digits. The collection title is not part of filenames. Comparison uploads use the same filenames and comparison numbers.
 
-Filename-unsafe characters become underscores. A column ending in a digit gets an underscore before the frame number (`x265_0001.png`) to keep its digits separate from the comparison number. Names that collide after sanitizing, including case-only differences, must be edited before downloading. Use an empty destination for each set. In Tampermonkey's browser download mode, existing filename conflicts prompt instead of silently adding a suffix that breaks grouping. Failed or cancelled downloads leave an incomplete set that needs to be completed before importing into slow.pics. Completed slow.pics uploads display a comparison link with a **Copy link** button.
+Filename-unsafe characters become underscores. A column ending in a digit gets an underscore before the frame number (`x265_0001.png`) to keep its digits separate from the comparison number. Names that collide after sanitizing, including case-only differences, must be edited before downloading. Use an empty destination for each set. In Tampermonkey's browser download mode, existing filename conflicts prompt instead of silently adding a suffix that breaks grouping. Failed or cancelled downloads leave an incomplete set that needs to be completed before importing into slow.pics. Completed slow.pics uploads display a comparison link with **Copy link** and **Copy BBCode** buttons. **Copy BBCode** fetches the completed comparison page once, validates its rows and column names against this upload, and copies this format:
+
+```text
+[url=https://slow.pics/c/example]GroupA vs GroupB | Slowpoke Pics[/url]
+[comparison=GroupA, GroupB]
+https://i.slow.pics/example-a.png
+https://i.slow.pics/example-b.png
+[/comparison]
+```
+
+All rows appear inside one comparison block, ordered row by row, with each row's images in column order. This also applies when the original selection used **Column by column**. Column names containing brackets, commas or line breaks cannot be represented by this format. The standalone image-width setting does not affect comparison BBCode.
+
+The generated BBCode is shown in a selectable text field and cached while the dialog stays open. If clipboard access is denied, copy it manually. A failed or cancelled lookup keeps the completed upload and comparison link; click **Copy BBCode** to retry only the lookup. Rate limits still apply, and no images are reuploaded. Page parsing was checked against saved HTML and mocked responses; no live slow.pics requests were made during development.
 
 The script reads accessible `<img>` elements, including hidden/lazy images already in the DOM. It does not extract canvas images, inaccessible frames, raw BBCode, or images that a site has not yet created. Open site content before invoking it when needed. Unknown image sizes are retained, so decorative images can occasionally need deselection. Headings and grouping are suggestions to review, especially when a page contains several comparisons or no heading.
 
