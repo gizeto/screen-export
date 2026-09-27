@@ -176,6 +176,9 @@
             if (line.replace(/\s+/g, ' ').length > 300 || /https?:\/\/|\[\/?[a-z]+(?:=|\])/i.test(line)) return null;
             line = line.replace(/^[\s=\[\]_-]+|[\s=\[\]_:-]+$/g, '');
             let parts = line.split(/\bvs\.?(?=\s|$)|\|/i);
+            // Spaced hyphens separate columns; WEB-DL and other hyphenated names stay intact.
+            if (parts.length === 1) parts = line.split(/\s+-(?=\s)/);
+            if (parts.length === 1) parts = line.split(',');
             // A single nonbreaking space can belong to a multiword name.
             if (parts.length === 1) parts = line.split(/[ \u00a0]*\u00a0[ \u00a0]*\u00a0[ \u00a0]*/);
             const names = parts.map(name => name.replace(/\s+/g, ' ').trim());
@@ -209,8 +212,15 @@
         function scan(root, target) {
             const images = [], headings = [];
             let text = '', start = 0, position = 0, targetPosition = 0;
+            const endHeading = at => {
+                const heading = headings.at(-1);
+                if (heading) heading.end ??= at;
+            };
             const flush = () => {
                 const names = columnNames(text);
+                const line = text.replace(/\s+/g, ' ').trim();
+                // Unrelated text ends a comparison; captions repeating its column names do not.
+                if (names || (line && !headings.at(-1)?.names.includes(line))) endHeading(start);
                 if (names) headings.push({ names, position: start });
                 text = '';
             };
@@ -223,11 +233,11 @@
                     return;
                 }
                 if (node.nodeType !== Node.ELEMENT_NODE) return;
-                if (node.id === HOST_ID || /^(SCRIPT|STYLE|TEMPLATE|PRE|CODE|TEXTAREA|BUTTON|INPUT|SELECT|NOSCRIPT)$/.test(node.tagName)) {
+                if (node.id === HOST_ID || /^(SCRIPT|STYLE|TEMPLATE|CODE|TEXTAREA|BUTTON|INPUT|SELECT|NOSCRIPT)$/.test(node.tagName)) {
                     flush();
                     return;
                 }
-                const boundary = /^(BR|IMG|DIV|P|SECTION|ARTICLE|MAIN|HEADER|FOOTER|ASIDE|FIELDSET|CENTER|TABLE|TR|TD|TH|UL|OL|LI|FIGURE|FIGCAPTION|H[1-6])$/.test(node.tagName);
+                const boundary = /^(BR|IMG|DIV|P|PRE|SECTION|ARTICLE|MAIN|HEADER|FOOTER|ASIDE|FIELDSET|CENTER|TABLE|TR|TD|TH|UL|OL|LI|FIGURE|FIGCAPTION|H[1-6])$/.test(node.tagName);
                 if (boundary) flush();
                 if (node.tagName === 'IMG') {
                     const item = imageInfo(node);
@@ -253,7 +263,8 @@
                 if (root === target && index < 0) index = 0;
                 const heading = found.headings[index];
                 if (!heading) continue;
-                const end = found.headings[index + 1]?.position ?? Infinity;
+                const end = heading.end ?? Infinity;
+                if (found.targetPosition >= end) continue;
                 const images = found.images.filter(item => item.position > heading.position && item.position < end);
                 if (images.length >= 2) return { root, images, names: heading.names };
             }
