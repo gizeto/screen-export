@@ -1,9 +1,12 @@
 // ==UserScript==
 // @name         Screen Export
-// @namespace    https://github.com/gizeto
-// @version      1.2.1
+// @namespace    https://github.com/gizeto/screen-export
+// @version      1.2.2
 // @description  Export selected images to comparison and image hosts, or download originals as a ZIP.
 // @author       gizeto
+// @downloadURL  https://raw.githubusercontent.com/gizeto/screen-export/master/screen-export.user.js
+// @updateURL    https://raw.githubusercontent.com/gizeto/screen-export/master/screen-export.user.js
+// @icon         https://raw.githubusercontent.com/twbs/icons/v1.13.1/icons/images.svg
 // @match        https://*/*
 // @run-at       document-end
 // @sandbox      DOM
@@ -1406,7 +1409,7 @@
             if (dialog.open) dialog.focus();
             else picker.querySelector('button').focus();
         }, { signal: lifetime.signal });
-        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.2.1',
+        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.2.2',
             manager: typeof GM_info === 'object' ? GM_info.scriptHandler : 'unknown',
             managerVersion: typeof GM_info === 'object' ? GM_info.version : 'unknown' });
         chooseArea();
