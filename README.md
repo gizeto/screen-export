@@ -2,7 +2,7 @@
 
 A userscript for selecting images, uploading comparisons to slow.pics, rehosting images on PTScreens, ImgBB or Pixhost, and downloading originals.
 
-Install [comps-rehost.user.js](comps-rehost.user.js) in **Chrome with Tampermonkey 5.4.6226 or newer**. Enable Tampermonkey's downloads permission and allow PNG, JPG, WebP, GIF and BMP extensions in its download settings.
+Install [comps-rehost.user.js](comps-rehost.user.js) in **Chrome with Tampermonkey 5.4.6226 or newer**. Enable Tampermonkey's downloads permission and allow the ZIP extension in its download settings.
 
 ## Usage
 
@@ -15,7 +15,7 @@ For **slow.pics**, review the suggested collection and column names. Choose **Ro
 
 For **PTScreens** or **ImgBB**, set the corresponding API key in Tampermonkey's menu. **Pixhost** needs no key. Standalone uploads accept any image count and follow page order. Results include copyable BBCode; **BBCode image width** changes its formatting without resizing or reuploading images.
 
-Downloads preserve original bytes and formats. Comparison filenames use the column name and a shared frame number (`GroupA0001.png`, `GroupB0001.png`); standalone filenames use `Image0001.png`, etc. Column names must produce distinct filenames.
+**Download originals (ZIP)** saves one `originals.zip`, preserving original bytes and formats. Inside it, comparison filenames use the column name and a shared frame number (`GroupA0001.png`, `GroupB0001.png`); standalone filenames use `Image0001.png`, etc. Column names must produce distinct filenames. All images must be fetched successfully before saving. Archives are built in memory and must be smaller than 4 GiB; use smaller selections for large sets.
 
 ## Optional TMDB linking
 
