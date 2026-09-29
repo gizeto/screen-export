@@ -810,9 +810,13 @@
             return new Blob([...parts, ...directory, end], { type: 'application/zip' });
         }
 
-        async function download(items, names, signal, status) {
+        async function download(items, names, signal, status, archiveTitle = 'Comparison') {
             requireCompleteRows(items, names);
             const prefixes = fileColumns(names);
+            let basename = archiveTitle.normalize('NFC').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_')
+                .trim().slice(0, 180).replace(/[. ]+$/g, '') || 'Comparison';
+            if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(basename)) basename = `_${basename}`;
+            const archiveName = `${basename}.zip`;
             const files = [];
             try {
                 for (let i = 0; i < items.length; i++) {
@@ -823,10 +827,10 @@
                 }
                 status(`Building ZIP with ${files.length} images…`);
                 const archive = await zipArchive(files, signal);
-                status('Saving originals.zip…');
-                await transfer(GM_download, { url: archive, name: 'originals.zip',
+                status(`Saving ${archiveName}…`);
+                await transfer(GM_download, { url: archive, name: archiveName,
                     saveAs: false, conflictAction: 'prompt' }, signal);
-                status(`Saved originals.zip — ${files.length} images.`);
+                status(`Saved ${archiveName} — ${files.length} images.`);
             } catch (error) {
                 status(error.name === 'AbortError' ? 'Cancelled — ZIP download incomplete.'
                     : `Stopped — ZIP download incomplete. ${error.message}`);
@@ -1329,7 +1333,9 @@
                         }), comparisonCopy, comparisonOutput);
                 } else {
                     update();
-                    await download(items, labels, controller.signal, report);
+                    const archiveTitle = standalone ? collectionName(document.title, [])
+                        : title.value.trim() || collectionName(document.title, labels);
+                    await download(items, labels, controller.signal, report, archiveTitle);
                 }
             } catch (error) {
                 const progress = kind === 'upload' && state.job ? ` ${state.job.done}/${state.job.items.length} uploaded.` : '';
