@@ -213,7 +213,7 @@
 
         function scan(root, target) {
             const images = [], headings = [];
-            let text = '', start = 0, position = 0, targetPosition = 0;
+            let text = '', start = 0, position = 0, targetPosition = 0, targetEndPosition = 0;
             const endHeading = at => {
                 const heading = headings.at(-1);
                 if (heading) heading.end ??= at;
@@ -228,7 +228,7 @@
             };
             const visit = node => {
                 const here = ++position;
-                if (node === target) targetPosition = here;
+                if (node === target) targetPosition = targetEndPosition = here;
                 if (node.nodeType === Node.TEXT_NODE) {
                     if (!text.trim() && node.textContent.trim()) start = here;
                     text += node.textContent;
@@ -248,10 +248,11 @@
                     for (const child of node.childNodes) visit(child);
                 }
                 if (boundary) flush();
+                if (node === target) targetEndPosition = position;
             };
             visit(root);
             flush();
-            return { images, headings, targetPosition };
+            return { images, headings, targetPosition, targetEndPosition };
         }
 
         function detect(target) {
@@ -261,8 +262,10 @@
                 if (found.images.length === 1) single ||= { root, images: found.images, names: [] };
                 if (found.images.length < 2) continue;
                 fallback ||= { root, images: found.images, names: [] };
-                let index = found.headings.findLastIndex(heading => heading.position <= found.targetPosition);
-                if (root === target && index < 0) index = 0;
+                // A selected heading wrapper starts before its own text.
+                let index = found.headings.findIndex(heading => heading.position >= found.targetPosition
+                    && heading.position <= found.targetEndPosition);
+                if (index < 0) index = found.headings.findLastIndex(heading => heading.position <= found.targetPosition);
                 const heading = found.headings[index];
                 if (!heading) continue;
                 const end = heading.end ?? Infinity;

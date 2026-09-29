@@ -294,6 +294,24 @@ async function domTests(script, examples, pixhostHTML) {
         }
         equal(api.detect(images[16]).names, []);
     });
+    await test('nested comparison headings retain names when their text wrapper is selected like ex14', () => {
+        const comparison = (names, prefix) => `<div class="comparison">
+            <div class="comparison__text">${names[0]} <span>vs</span> ${names[1]}: <button>Show</button></div>
+            <ul hidden>${Array.from({ length: 3 }, (_, row) => `<li><ul>${names.map((name, column) =>
+                `<li><figure>${row === 0 ? `<figcaption>${name}</figcaption>` : ''}${img(`${prefix}-${row}-${column}`)}</figure></li>`
+            ).join('')}</ul></li>`).join('')}</ul></div>`;
+        const root = fixture(comparison(['GroupA', 'GroupB'], 'first') + comparison(['GroupC', 'GroupD'], 'second'));
+        for (const [index, group] of [...root.children].entries()) {
+            const expected = index ? ['GroupC', 'GroupD'] : ['GroupA', 'GroupB'];
+            const sources = [...group.querySelectorAll('img')].map(image => image.src);
+            for (const target of [group, ...group.querySelectorAll('div, span, button, ul, figure, figcaption, img')]) {
+                const area = api.detect(target);
+                equal(area.names, expected);
+                equal(area.images.map(item => item.source), sources);
+            }
+        }
+        equal(calls.length, 0);
+    });
     await test('code and raw BBCode are not column headings', () => {
         for (const content of ['<code>Source - Encode</code>', '[color=red]Source[/color] - Encode']) {
             const root = fixture(`<pre>${content}</pre><div>${img('a')}${img('b')}</div>`);
