@@ -937,12 +937,29 @@ async function domTests(script, examples, pixhostHTML) {
         };
         await api.download([{ source: 'https://images.test/a.png' }, { source: 'https://images.test/b.png' }],
             ['Source', 'Grüp:名'], controller().signal, message => messages.push(message));
-        equal(saved.map(item => item.name), ['originals.zip']);
+        equal(saved.map(item => item.name), ['Comparison.zip']);
         const entries = await readZIP(saved[0].url);
         equal(entries.map(file => file.name), ['Source0001.png', 'Grüp_名0001.png']);
         equal(entries.map(file => file.bytes), [[...pngBytes], [...pngBytes]]);
         equal(saved[0].conflictAction, 'prompt');
-        equal(messages.at(-1), 'Saved originals.zip — 2 images.');
+        equal(messages.at(-1), 'Saved Comparison.zip — 2 images.');
+    });
+    await test('ZIP archive titles are safe filenames with a fallback for empty names', async () => {
+        handler = imageResponse;
+        const saved = [];
+        GM_download = options => { saved.push(options.name); queueMicrotask(() => options.onload()); return { abort() {} }; };
+        for (const [title, expected] of [
+            ['Movie Name 1976 2160p - Source vs Encode vs GroupA', 'Movie Name 1976 2160p - Source vs Encode vs GroupA.zip'],
+            [' ../Movie: "Name" / GroupA\\GroupB?*<>|\n. ', '.._Movie_ _Name_ _ GroupA_GroupB______.zip'],
+            ['', 'Comparison.zip'], [' ... ', 'Comparison.zip'], ['CON', '_CON.zip'],
+            ['Grüp 名', 'Grüp 名.zip'], ['A'.repeat(200), `${'A'.repeat(180)}.zip`]
+        ]) {
+            const messages = [];
+            await api.download([{ source: 'https://images.test/a.png' }], ['Image'], controller().signal,
+                message => messages.push(message), title);
+            equal(saved.at(-1), expected);
+            equal(messages.at(-1), `Saved ${expected} — 1 images.`);
+        }
     });
     await test('ZIP fetch failures stop subsequent requests and never save a partial archive', async () => {
         for (const response of [{ status: 503 }, { response: new Blob(['not an image']) }]) {
@@ -999,6 +1016,7 @@ async function domTests(script, examples, pixhostHTML) {
         await rejects(() => api.zipArchive([interrupted], active.signal), /Cancelled/);
     });
     await test('column order groups selected images consistently in previews, downloads and upload slots', async () => {
+        document.title = 'Movie.Name.1976.2160p.BluRay-GroupName :: Site';
         const images = ['a', 'b', 'c', 'd', 'e', 'f'].map(name => ({ source: `https://images.test/${name}.png`, preview: `https://images.test/${name}.png` }));
         api.showArea({ root: document.body, images, names: ['GroupA', 'GroupB'] });
         [...api.dialog.querySelectorAll('button')].find(button => button.textContent === 'Select all').click();
@@ -1016,9 +1034,18 @@ async function domTests(script, examples, pixhostHTML) {
         GM_download = options => { saved.push(options); queueMicrotask(() => options.onload()); return { abort() {} }; };
         await api.run('download');
         equal(calls.map(call => call.url), expected);
-        equal(saved.map(item => item.name), ['originals.zip']);
+        equal(saved.map(item => item.name), ['Movie Name 1976 2160p - GroupA vs GroupB.zip']);
         const archiveNames = (await readZIP(saved[0].url)).map(file => file.name);
         equal(archiveNames, ['GroupA0001.png', 'GroupB0001.png', 'GroupA0002.png', 'GroupB0002.png', 'GroupA0003.png', 'GroupB0003.png']);
+        api.title.value = 'Custom collection';
+        api.title.dispatchEvent(new Event('input'));
+        await api.run('download');
+        equal(saved.at(-1).name, 'Custom collection.zip');
+        api.title.value = '';
+        api.title.dispatchEvent(new Event('input'));
+        await api.run('download');
+        equal(saved.at(-1).name, 'Movie Name 1976 2160p - GroupA vs GroupB.zip');
+        api.state.customTitle = false;
         calls.length = 0;
         handler = options => {
             if (options.url.endsWith('/comparison') && options.method === 'GET') return { responseHeaders: 'Set-Cookie: XSRF-TOKEN=token;', responseText: '' };
@@ -1324,6 +1351,8 @@ async function domTests(script, examples, pixhostHTML) {
         equal(calls.length, 0);
     });
     await test('standalone downloads preserve page order and use sequential names', async () => {
+        const pageTitle = document.title;
+        document.title = 'Movie.Name.1976.2160p.BluRay-GroupName :: Site';
         imagesAPI.resetButton.click();
         equal(imagesAPI.result.children.length, 0);
         ok(!imagesAPI.destination.matches(':disabled'));
@@ -1331,10 +1360,23 @@ async function domTests(script, examples, pixhostHTML) {
         handler = () => imageResponse();
         calls.length = 0;
         GM_download = options => { downloads.push(options); queueMicrotask(() => options.onload({})); return { abort() {} }; };
+        imagesAPI.title.value = 'Hidden comparison title';
+        imagesAPI.title.dispatchEvent(new Event('input'));
+        const previousHost = imagesAPI.destination.value;
+        for (const host of ['ptscreens', 'imgbb', 'pixhost']) {
+            chooseHost(host);
+            calls.length = 0;
+            await imagesAPI.run('download');
+            equal(downloads.at(-1).name, 'Movie Name 1976 2160p.zip');
+            equal(calls.map(call => call.url), imagesAPI.selectedImages().map(item => item.source));
+        }
+        document.title = 'Unrecognized page title';
         await imagesAPI.run('download');
-        equal(downloads.map(item => item.name), ['originals.zip']);
-        equal(calls.map(call => call.url), imagesAPI.selectedImages().map(item => item.source));
+        equal(downloads.at(-1).name, 'Comparison.zip');
         equal((await readZIP(downloads[0].url)).map(file => file.name), ['Image0001.png', 'Image0002.png', 'Image0003.png']);
+        chooseHost(previousHost);
+        document.title = pageTitle;
+        imagesAPI.state.customTitle = false;
         GM_download = () => { throw new Error('Unexpected download'); };
     });
     await test('standalone cancellation preserves completed images and resumes the aborted image', async () => {
