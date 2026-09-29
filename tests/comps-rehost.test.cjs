@@ -3,6 +3,45 @@ const { readFileSync, existsSync } = require('node:fs');
 const { join } = require('node:path');
 const { JSDOM, VirtualConsole } = require('jsdom');
 const { test } = require('node:test');
+const { crc32 } = require('node:zlib');
+
+// Read the ZIP directory independently and validate each stored member with Node's CRC32.
+async function readZIP(blob) {
+    assert.equal(blob.type, 'application/zip');
+    const bytes = Buffer.from(await blob.arrayBuffer());
+    const end = bytes.length - 22;
+    assert.equal(bytes.readUInt32LE(end), 0x06054b50);
+    assert.equal(bytes.readUInt32LE(end + 4), 0);
+    assert.equal(bytes.readUInt16LE(end + 20), 0);
+    const count = bytes.readUInt16LE(end + 10);
+    assert.equal(bytes.readUInt16LE(end + 8), count);
+    let cursor = bytes.readUInt32LE(end + 16), localEnd = 0;
+    assert.equal(cursor + bytes.readUInt32LE(end + 12), end);
+    const files = [];
+    for (let i = 0; i < count; i++) {
+        assert.equal(bytes.readUInt32LE(cursor), 0x02014b50);
+        assert.equal(bytes.readUInt16LE(cursor + 8), 0x0800);
+        assert.equal(bytes.readUInt16LE(cursor + 10), 0); // STORE
+        const size = bytes.readUInt32LE(cursor + 24);
+        assert.equal(bytes.readUInt32LE(cursor + 20), size);
+        const nameLength = bytes.readUInt16LE(cursor + 28);
+        const name = bytes.subarray(cursor + 46, cursor + 46 + nameLength).toString('utf8');
+        const local = bytes.readUInt32LE(cursor + 42);
+        assert.equal(local, localEnd);
+        assert.equal(bytes.readUInt32LE(local), 0x04034b50);
+        assert.deepEqual(bytes.subarray(local + 4, local + 30), bytes.subarray(cursor + 6, cursor + 32));
+        assert.equal(bytes.subarray(local + 30, local + 30 + nameLength).toString('utf8'), name);
+        const start = local + 30 + nameLength + bytes.readUInt16LE(local + 28);
+        const data = bytes.subarray(start, start + size);
+        assert.equal(crc32(data), bytes.readUInt32LE(cursor + 16));
+        files.push({ name, bytes: [...data] });
+        localEnd = start + size;
+        cursor += 46 + nameLength + bytes.readUInt16LE(cursor + 30) + bytes.readUInt16LE(cursor + 32);
+    }
+    assert.equal(localEnd, bytes.readUInt32LE(end + 16));
+    assert.equal(cursor, end);
+    return files;
+}
 
 const source = readFileSync(join(__dirname, '..', 'comps-rehost.user.js'), 'utf8');
 test('metadata enables menu registration and limits storage access to userscript settings', () => {
@@ -20,7 +59,7 @@ async function inDOM(expression) {
     const dom = new JSDOM('<!doctype html><body></body>', {
         url: 'https://fixture.test/details', runScripts: 'outside-only', virtualConsole: new VirtualConsole()
     });
-    Object.assign(dom.window, { Blob, FormData });
+    Object.assign(dom.window, { Blob, FormData, TextEncoder, readZIP });
     // jsdom has no native dialog implementation or image decoder.
     dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
     dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -82,7 +121,7 @@ async function domTests(script, examples, pixhostHTML) {
     globalThis.GM_cookie = { list() { throw new Error('Unexpected cookie access'); } };
     const exposed = script.replace('        chooseArea();\n    }\n})();', `
         globalThis.rehost = { httpURL, unwrapURL, originalURL, columnNames, imageInfo, inertHTML, detect, scan,
-            selectRange, fetchOriginal, imageFile, request, upload, download, filename, slowToken, state,
+            selectRange, fetchOriginal, imageFile, request, upload, download, zipArchive, filename, slowToken, state,
             showArea, chooseArea, expandArea, close, dialog, picker, candidates, columns, names,
             uploadButton, downloadButton, summary, settings, preview, run, status, resetButton, result, browserID,
             diagnostics, retryAfter, slowRequest, fileColumns, collectionName, title, publicInput,
@@ -581,7 +620,7 @@ async function domTests(script, examples, pixhostHTML) {
         await api.download([{ link: 'https://blocked.test/page', source: 'https://blocked.test/thumb.png' }, { source: 'https://blocked.test/b.png' }],
             ['Source', 'Encode'], controller().signal, message => messages.push(message));
         equal(calls.length, 1);
-        ok(messages.at(-1).includes('Stopped — 0 saved, 1 failed, 1 not completed.'));
+        ok(messages.at(-1).includes('Stopped — ZIP download incomplete.'));
         ok(messages.at(-1).includes('access challenge'));
         ok(api.diagnostics.join('\n').includes('"category":"challenge"'));
         ok(!api.diagnostics.join('\n').includes('PRIVATE_ERROR_BODY'));
@@ -886,34 +925,76 @@ async function domTests(script, examples, pixhostHTML) {
         await rejects(() => api.upload(job, controller().signal, () => {}), /did not accept image/);
         equal(job.done, 0);
     });
-    await test('downloads use verified blobs, safe filenames and accurate success/failure counts', async () => {
+    await test('downloads save one ZIP with safe UTF-8 filenames and unchanged image bytes', async () => {
         handler = imageResponse;
         const saved = [], messages = [];
         GM_download = options => {
             saved.push(options);
-            queueMicrotask(() => saved.length === 2 ? options.onerror({ error: 'not_whitelisted' }) : options.onload());
+            queueMicrotask(() => options.onload());
             return { abort() {} };
         };
         await api.download([{ source: 'https://images.test/a.png' }, { source: 'https://images.test/b.png' }],
-            ['Source', 'En:code'], controller().signal, message => messages.push(message));
-        equal(saved.map(item => item.name), ['Source0001.png', 'En_code0001.png']);
-        ok(saved.every(item => item.url instanceof Blob));
+            ['Source', 'Grüp:名'], controller().signal, message => messages.push(message));
+        equal(saved.map(item => item.name), ['originals.zip']);
+        const entries = await readZIP(saved[0].url);
+        equal(entries.map(file => file.name), ['Source0001.png', 'Grüp_名0001.png']);
+        equal(entries.map(file => file.bytes), [[...pngBytes], [...pngBytes]]);
         equal(saved[0].conflictAction, 'prompt');
-        ok(messages.at(-1).startsWith('1 saved, 1 failed.'));
-        ok(messages.at(-1).includes('not_whitelisted'));
+        equal(messages.at(-1), 'Saved originals.zip — 2 images.');
     });
-    await test('download cancellation stops subsequent files and reports already saved files', async () => {
+    await test('ZIP fetch failures stop subsequent requests and never save a partial archive', async () => {
+        for (const response of [{ status: 503 }, { response: new Blob(['not an image']) }]) {
+            calls.length = 0;
+            handler = () => calls.length === 2 ? response : imageResponse();
+            let saved = 0;
+            GM_download = () => { saved++; };
+            const messages = [];
+            await api.download(['a', 'b', 'c'].map(id => ({ source: `https://images.test/${id}.png` })),
+                ['Image'], controller().signal, message => messages.push(message));
+            equal(calls.length, 2);
+            equal(saved, 0);
+            ok(messages.at(-1).startsWith('Stopped — ZIP download incomplete.'));
+        }
+    });
+    await test('ZIP save errors and cancellation never report success', async () => {
         handler = imageResponse;
+        for (const cancel of [false, true]) {
+            const active = controller(), messages = [];
+            let attempts = 0, aborted = 0;
+            GM_download = options => {
+                attempts++;
+                queueMicrotask(() => cancel ? active.abort() : options.onerror({ error: 'not_whitelisted' }));
+                return { abort() { aborted++; } };
+            };
+            await api.download([{ source: 'https://images.test/a.png' }], ['Image'], active.signal, message => messages.push(message));
+            equal(attempts, 1);
+            equal(aborted, cancel ? 1 : 0);
+            ok(messages.at(-1).includes(cancel ? 'Cancelled' : 'not_whitelisted'));
+            ok(!messages.at(-1).includes('Saved'));
+        }
+    });
+    await test('cancelling image collection stops subsequent requests without saving a ZIP', async () => {
+        calls.length = 0;
         const active = controller(), messages = [];
+        handler = () => { active.abort(); return imageResponse(); };
         let saved = 0;
-        GM_download = options => {
-            queueMicrotask(() => { saved++; options.onload(); active.abort(); });
-            return { abort() {} };
-        };
-        await api.download([{ source: 'https://images.test/a.png' }, { source: 'https://images.test/b.png' }],
-            ['A', 'B'], active.signal, message => messages.push(message));
-        equal(saved, 1);
-        ok(messages.at(-1).startsWith('Cancelled — 1 saved, 0 failed, 1 not completed.'));
+        GM_download = () => { saved++; };
+        await api.download(['a', 'b'].map(id => ({ source: `https://images.test/${id}.png` })),
+            ['Image'], active.signal, message => messages.push(message));
+        equal(calls.length, 1);
+        equal(saved, 0);
+        equal(messages.at(-1), 'Cancelled — ZIP download incomplete.');
+    });
+    await test('ZIP checksums cover multiple chunks and ZIP size limits fail before reading data', async () => {
+        const data = new Uint8Array(1024 * 1024 + 17).map((_, i) => i % 251);
+        const entries = await readZIP(await api.zipArchive([{ name: 'GroupA0001.jpg', blob: new Blob([data]) }], controller().signal));
+        equal(entries[0].bytes, [...data]);
+        const tooLarge = { name: 'Image.png', blob: { size: 0xffffffff, slice() { throw new Error('Unexpected read'); } } };
+        await rejects(() => api.zipArchive([tooLarge], controller().signal), /smaller than 4 GiB/);
+        await rejects(() => api.zipArchive(Array(65535).fill(tooLarge), controller().signal), /Too many images/);
+        const active = controller();
+        const interrupted = { name: 'Image.png', blob: { size: 1, slice() { active.abort(); return new Blob(['x']); } } };
+        await rejects(() => api.zipArchive([interrupted], active.signal), /Cancelled/);
     });
     await test('column order groups selected images consistently in previews, downloads and upload slots', async () => {
         const images = ['a', 'b', 'c', 'd', 'e', 'f'].map(name => ({ source: `https://images.test/${name}.png`, preview: `https://images.test/${name}.png` }));
@@ -930,10 +1011,12 @@ async function domTests(script, examples, pixhostHTML) {
         calls.length = 0;
         handler = imageResponse;
         const saved = [];
-        GM_download = options => { saved.push(options.name); queueMicrotask(() => options.onload()); return { abort() {} }; };
+        GM_download = options => { saved.push(options); queueMicrotask(() => options.onload()); return { abort() {} }; };
         await api.run('download');
         equal(calls.map(call => call.url), expected);
-        equal(saved, ['GroupA0001.png', 'GroupB0001.png', 'GroupA0002.png', 'GroupB0002.png', 'GroupA0003.png', 'GroupB0003.png']);
+        equal(saved.map(item => item.name), ['originals.zip']);
+        const archiveNames = (await readZIP(saved[0].url)).map(file => file.name);
+        equal(archiveNames, ['GroupA0001.png', 'GroupB0001.png', 'GroupA0002.png', 'GroupB0002.png', 'GroupA0003.png', 'GroupB0003.png']);
         calls.length = 0;
         handler = options => {
             if (options.url.endsWith('/comparison') && options.method === 'GET') return { responseHeaders: 'Set-Cookie: XSRF-TOKEN=token;', responseText: '' };
@@ -945,7 +1028,7 @@ async function domTests(script, examples, pixhostHTML) {
         equal(calls.filter(call => call.url.startsWith('https://images.test/')).map(call => call.url), expected);
         const uploads = calls.filter(call => call.url.endsWith('/upload/image'));
         equal(uploads.map(call => call.data.get('imageUuid')), ['a1', 'b1', 'a2', 'b2', 'a3', 'b3']);
-        equal(uploads.map(call => call.data.get('file').name), saved);
+        equal(uploads.map(call => call.data.get('file').name), archiveNames);
         ok(api.imageOrder.matches(':disabled'));
         api.resetButton.click();
         api.columns.value = '3';
@@ -1244,9 +1327,12 @@ async function domTests(script, examples, pixhostHTML) {
         ok(!imagesAPI.destination.matches(':disabled'));
         const downloads = [];
         handler = () => imageResponse();
-        GM_download = options => { downloads.push(options.name); queueMicrotask(() => options.onload({})); return { abort() {} }; };
+        calls.length = 0;
+        GM_download = options => { downloads.push(options); queueMicrotask(() => options.onload({})); return { abort() {} }; };
         await imagesAPI.run('download');
-        equal(downloads, ['Image0001.png', 'Image0002.png', 'Image0003.png']);
+        equal(downloads.map(item => item.name), ['originals.zip']);
+        equal(calls.map(call => call.url), imagesAPI.selectedImages().map(item => item.source));
+        equal((await readZIP(downloads[0].url)).map(file => file.name), ['Image0001.png', 'Image0002.png', 'Image0003.png']);
         GM_download = () => { throw new Error('Unexpected download'); };
     });
     await test('standalone cancellation preserves completed images and resumes the aborted image', async () => {

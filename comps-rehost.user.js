@@ -749,32 +749,89 @@
             }
         }
 
+        async function zipArchive(files, signal) {
+            // ZIP STORE keeps original image bytes intact; no compression library is needed.
+            const limit = 0xffffffff;
+            if (files.length >= 0xffff) throw new Error('Too many images for a ZIP archive. Select fewer images.');
+            const encoder = new TextEncoder();
+            const entries = files.map(file => ({ ...file, nameBytes: encoder.encode(file.name) }));
+            let size = 22;
+            for (const file of entries) {
+                size += 76 + file.nameBytes.length * 2 + file.blob.size;
+                if (file.nameBytes.length > 0xffff || file.blob.size >= limit || size >= limit) {
+                    throw new Error('ZIP archives must be smaller than 4 GiB. Select fewer images.');
+                }
+            }
+            const table = Uint32Array.from({ length: 256 }, (_, value) => {
+                for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+                return value >>> 0;
+            });
+            const parts = [], directory = [];
+            let offset = 0, directorySize = 0;
+            for (const file of entries) {
+                checkAbort(signal);
+                let crc = 0xffffffff;
+                for (let start = 0; start < file.blob.size; start += 1024 * 1024) {
+                    const bytes = new Uint8Array(await file.blob.slice(start, start + 1024 * 1024).arrayBuffer());
+                    checkAbort(signal);
+                    for (const byte of bytes) crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+                }
+                crc = (crc ^ 0xffffffff) >>> 0;
+                const local = new Uint8Array(30 + file.nameBytes.length);
+                const view = new DataView(local.buffer);
+                view.setUint32(0, 0x04034b50, true);
+                view.setUint16(4, 20, true); // ZIP 2.0
+                view.setUint16(6, 0x0800, true); // UTF-8 filenames
+                view.setUint16(12, 0x0021, true); // 1980-01-01
+                view.setUint32(14, crc, true);
+                view.setUint32(18, file.blob.size, true);
+                view.setUint32(22, file.blob.size, true);
+                view.setUint16(26, file.nameBytes.length, true);
+                local.set(file.nameBytes, 30);
+                const central = new Uint8Array(46 + file.nameBytes.length);
+                const centralView = new DataView(central.buffer);
+                centralView.setUint32(0, 0x02014b50, true);
+                centralView.setUint16(4, 20, true);
+                central.set(local.subarray(4, 30), 6);
+                centralView.setUint32(42, offset, true);
+                central.set(file.nameBytes, 46);
+                parts.push(local, file.blob);
+                directory.push(central);
+                offset += local.length + file.blob.size;
+                directorySize += central.length;
+            }
+            const end = new Uint8Array(22);
+            const endView = new DataView(end.buffer);
+            endView.setUint32(0, 0x06054b50, true);
+            endView.setUint16(8, entries.length, true);
+            endView.setUint16(10, entries.length, true);
+            endView.setUint32(12, directorySize, true);
+            endView.setUint32(16, offset, true);
+            checkAbort(signal);
+            return new Blob([...parts, ...directory, end], { type: 'application/zip' });
+        }
+
         async function download(items, names, signal, status) {
             requireCompleteRows(items, names);
             const prefixes = fileColumns(names);
-            let done = 0;
-            const failures = [];
-            for (let i = 0; i < items.length; i++) {
-                try {
+            const files = [];
+            try {
+                for (let i = 0; i < items.length; i++) {
                     checkAbort(signal);
-                    status(`Downloading ${i + 1}/${items.length} — ${done} saved, ${failures.length} failed…`);
+                    status(`Fetching original ${i + 1}/${items.length} for ZIP…`);
                     const file = await fetchOriginal(items[i], signal);
-                    await transfer(GM_download, { url: file.blob, name: filename(i, prefixes, file.extension),
-                        saveAs: false, conflictAction: 'prompt' }, signal);
-                    done++;
-                } catch (error) {
-                    if (error.name === 'AbortError') {
-                        status(`Cancelled — ${done} saved, ${failures.length} failed, ${items.length - done - failures.length} not completed.`);
-                        return;
-                    }
-                    failures.push(`Image ${i + 1}: ${error.message}`);
-                    if (error.stopTransfer) {
-                        status(`Stopped — ${done} saved, ${failures.length} failed, ${items.length - done - failures.length} not completed.\n${failures.join('\n')}\nThe set is incomplete; do not import it yet.`);
-                        return;
-                    }
+                    files.push({ blob: file.blob, name: filename(i, prefixes, file.extension) });
                 }
+                status(`Building ZIP with ${files.length} images…`);
+                const archive = await zipArchive(files, signal);
+                status('Saving originals.zip…');
+                await transfer(GM_download, { url: archive, name: 'originals.zip',
+                    saveAs: false, conflictAction: 'prompt' }, signal);
+                status(`Saved originals.zip — ${files.length} images.`);
+            } catch (error) {
+                status(error.name === 'AbortError' ? 'Cancelled — ZIP download incomplete.'
+                    : `Stopped — ZIP download incomplete. ${error.message}`);
             }
-            status(`${done} saved, ${failures.length} failed.${failures.length ? '\n' + failures.join('\n') + '\nThe set is incomplete; do not import it yet.' : ''}`);
         }
 
         function element(tag, properties = {}, ...children) {
@@ -975,7 +1032,7 @@
         const result = element('div', { className: 'controls' });
         const expand = button('Expand to parent', expandArea);
         const uploadButton = button('Upload to slow.pics', () => run('upload'));
-        const downloadButton = button('Download originals', () => run('download'));
+        const downloadButton = button('Download originals (ZIP)', () => run('download'));
         const cancelButton = button('Cancel transfer', () => state.active?.abort());
         const resetButton = button('Start over', () => {
             state.job = null;
