@@ -15,7 +15,7 @@ For **slow.pics**, review the suggested collection and column names. Choose **Ro
 
 For **PTScreens** or **ImgBB**, set the corresponding API key in Tampermonkey's menu. **Pixhost** needs no key. Standalone uploads accept any image count and follow page order. Results include copyable BBCode; **BBCode image width** changes its formatting without resizing or reuploading images.
 
-**Download originals (ZIP)** preserves original bytes and formats. With slow.pics selected, the ZIP uses the collection name, such as `Movie Name 1976 2160p - Source vs Encode vs GroupA.zip`. With an image host selected, it uses the page's movie or TV title, such as `Movie Name 1976 2160p.zip`. Unrecognized titles fall back to `Comparison`; unsafe filename characters become underscores. Inside the ZIP, comparison filenames use the column name and a shared frame number (`GroupA0001.png`, `GroupB0001.png`); standalone filenames use `Image0001.png`, etc. Column names must produce distinct filenames. All images must be fetched successfully before saving. Archives are built in memory and must be smaller than 4 GiB; use smaller selections for large sets.
+Downloads save originals in one ZIP, named after the collection for slow.pics or the movie/TV title for image hosts. Archives must be smaller than 4 GiB.
 
 ## Optional TMDB linking
 
