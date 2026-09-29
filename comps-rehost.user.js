@@ -176,8 +176,8 @@
             if (line.replace(/\s+/g, ' ').length > 300 || /https?:\/\/|\[\/?[a-z]+(?:=|\])/i.test(line)) return null;
             line = line.replace(/^[\s=\[\]_-]+|[\s=\[\]_:-]+$/g, '');
             let parts = line.split(/\bvs\.?(?=\s|$)|\|/i);
-            // Spaced hyphens separate columns; WEB-DL and other hyphenated names stay intact.
-            if (parts.length === 1) parts = line.split(/\s+-(?=\s)/);
+            // Spaced hyphens/slashes separate columns; WEB-DL and Source/Filtered stay intact.
+            if (parts.length === 1) parts = line.split(/\s+[-/](?=\s|$)/);
             if (parts.length === 1) parts = line.split(',');
             // A single nonbreaking space can belong to a multiword name.
             if (parts.length === 1) parts = line.split(/[ \u00a0]*\u00a0[ \u00a0]*\u00a0[ \u00a0]*/);

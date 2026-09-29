@@ -231,6 +231,28 @@ async function domTests(script, examples, pixhostHTML) {
         }
         equal(calls.length, 0);
     });
+    await test('spaced slash headings detect comparison columns across wrappers like ex13', () => {
+        equal(api.columnNames('Source / GroupA'), ['Source', 'GroupA']);
+        equal(api.columnNames('Filtered Source / WEB-DL / Old GroupA'), ['Filtered Source', 'WEB-DL', 'Old GroupA']);
+        for (const text of ['Source/Filtered', 'Source / ', 'Source / / Encode', 'Source / https://images.test/a.png']) {
+            equal(api.columnNames(text), null);
+        }
+        const root = fixture(`<div align="center"><p><b>Release wrote:</b></p>
+            <table><tbody><tr><td><pre><strong>Example Film 2012 1080p BluRay-GroupName</strong>
+                CONTAINER: Matroska
+                SUBTITLES: Eng, Pol, Spa
+                RELEASE DATE: 29/06/2017</pre></td></tr></tbody></table></div>
+            <div align="center"><strong>Source / GroupA</strong></div><br>
+            <div align="center">${Array.from({ length: 16 }, (_, i) => img(`slash-${i}`)).join(' ')}</div>
+            <p>More screenshots</p><div>${img('unrelated-a')}${img('unrelated-b')}</div>`);
+        const images = [...root.querySelectorAll('img')];
+        for (const target of images.slice(0, 16)) {
+            const area = api.detect(target);
+            equal(area.names, ['Source', 'GroupA']);
+            equal(area.images.map(item => item.source), images.slice(0, 16).map(image => image.src));
+        }
+        equal(api.detect(images[16]).names, []);
+    });
     await test('code and raw BBCode are not column headings', () => {
         for (const content of ['<code>Source - Encode</code>', '[color=red]Source[/color] - Encode']) {
             const root = fixture(`<pre>${content}</pre><div>${img('a')}${img('b')}</div>`);
