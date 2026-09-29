@@ -565,21 +565,16 @@
                 job.collection = collection;
             }
             const ids = job.collection.images.flat();
-            for (; job.done < job.items.length; job.done++) {
-                checkAbort(signal);
-                const current = `${job.done + 1}/${job.items.length}`;
-                status(`Fetching original ${current}…`);
-                job.pending ||= await fetchOriginal(job.items[job.done], signal);
+            await uploadOriginals(job, signal, status, async (file, current) => {
                 const data = new FormData();
                 data.append('collectionUuid', job.collection.collectionUuid);
                 data.append('imageUuid', ids[job.done]);
                 data.append('browserId', job.browserId);
-                data.append('file', job.pending.blob, filename(job.done, prefixes, job.pending.extension));
+                data.append('file', file.blob, filename(job.done, prefixes, file.extension));
                 status(`Uploading image ${current}…`);
                 const response = await slowRequest('/upload/image', { method: 'POST', headers, data }, signal);
                 if (response.responseText?.trim() !== 'OK') throw new Error(`slow.pics did not accept image ${current}. Retry to resume this collection.`);
-                job.pending = null;
-            }
+            });
             return `${SLOW}/c/${job.collection.key}`;
         }
 
@@ -703,21 +698,26 @@
             return imageUploadResult(destination, parsed);
         }
 
-        async function uploadImages(job, signal, status, changed = () => {}) {
-            const key = hostKey(job.destination);
-            for (; job.done < job.items.length;) {
+        async function uploadOriginals(job, signal, status, send, changed = () => {}) {
+            while (job.done < job.items.length) {
                 checkAbort(signal);
                 const current = `${job.done + 1}/${job.items.length}`;
                 status(`Fetching original ${current}…`);
                 job.pending ||= await fetchOriginal(job.items[job.done], signal);
-                status(`Uploading image ${current} to ${imageHosts[job.destination].label}…`);
-                const uploaded = await uploadImage(job.destination, job.pending,
-                    filename(job.done, ['Image'], job.pending.extension), job.nsfw, key, signal);
-                job.results.push(uploaded);
+                await send(job.pending, current);
                 job.pending = null;
                 job.done++;
                 changed();
             }
+        }
+
+        async function uploadImages(job, signal, status, changed) {
+            const key = hostKey(job.destination);
+            await uploadOriginals(job, signal, status, async (file, current) => {
+                status(`Uploading image ${current} to ${imageHosts[job.destination].label}…`);
+                job.results.push(await uploadImage(job.destination, file,
+                    filename(job.done, ['Image'], file.extension), job.nsfw, key, signal));
+            }, changed);
         }
 
         function validWidth(value) { return value === '' || /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value)); }
@@ -726,9 +726,14 @@
             return results.map(({ pageUrl, originalUrl }) => `[url=${pageUrl}][img${width ? `=${width}` : ''}]${originalUrl}[/img][/url]`).join(' ');
         }
 
+        function safeFilename(value, maxLength, fallback) {
+            return value.normalize('NFC').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_')
+                .trim().slice(0, maxLength).replace(/[. ]+$/g, '') || fallback;
+        }
+
         function fileColumns(names) {
             const prefixes = names.map(name => {
-                const safe = name.normalize('NFC').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').trim().slice(0, 80).replace(/[. ]+$/g, '') || 'Column';
+                const safe = safeFilename(name, 80, 'Column');
                 // Keep digits in names such as x265 separate from the trailing comparison number.
                 return /\d$/.test(safe) ? `${safe}_` : safe;
             });
@@ -813,8 +818,7 @@
         async function download(items, names, signal, status, archiveTitle = 'Comparison') {
             requireCompleteRows(items, names);
             const prefixes = fileColumns(names);
-            let basename = archiveTitle.normalize('NFC').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_')
-                .trim().slice(0, 180).replace(/[. ]+$/g, '') || 'Comparison';
+            let basename = safeFilename(archiveTitle, 180, 'Comparison');
             if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(basename)) basename = `_${basename}`;
             const archiveName = `${basename}.zip`;
             const files = [];
@@ -972,8 +976,7 @@
             element('option', { value: 'rows', textContent: 'Row by row' }),
             element('option', { value: 'columns', textContent: 'Column by column' }));
         const publicInput = element('input', { type: 'checkbox', checked: false });
-        const storedTMDBKey = GM_getValue('tmdb_api_key', '');
-        let tmdbAPIKey = typeof storedTMDBKey === 'string' ? storedTMDBKey.trim() : '';
+        let tmdbAPIKey = savedKey('tmdb_api_key');
         let tmdbSearchController = null;
         const tmdbType = element('select', { ariaLabel: 'TMDB media type', onchange: () => {
             tmdbInput.value = ''; resetTMDBResults(); update();
@@ -1085,8 +1088,7 @@
         }
 
         refreshOpenSettings = () => {
-            const storedKey = GM_getValue('tmdb_api_key', '');
-            tmdbAPIKey = typeof storedKey === 'string' ? storedKey.trim() : '';
+            tmdbAPIKey = savedKey('tmdb_api_key');
             resetTMDBResults();
             tmdbSearchSection.hidden = !tmdbAPIKey;
             tmdbResultField.hidden = !tmdbAPIKey;
