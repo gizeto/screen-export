@@ -1,8 +1,8 @@
-# comps-rehost
+# Screen Export
 
-A userscript for selecting images, uploading comparisons to slow.pics, rehosting images on PTScreens, ImgBB or Pixhost, and downloading originals.
+Export selected images to comparison and image hosts, or download originals as a ZIP.
 
-Install [comps-rehost.user.js](comps-rehost.user.js) in **Chrome with Tampermonkey 5.4.6226 or newer**. Enable Tampermonkey's downloads permission and allow the ZIP extension in its download settings.
+Install [screen-export.user.js](screen-export.user.js) in **Chrome with Tampermonkey 5.4.6226 or newer**. Enable Tampermonkey's downloads permission and allow the ZIP extension in its download settings.
 
 ## Usage
 

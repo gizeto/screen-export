@@ -43,7 +43,7 @@ async function readZIP(blob) {
     return files;
 }
 
-const source = readFileSync(join(__dirname, '..', 'comps-rehost.user.js'), 'utf8');
+const source = readFileSync(join(__dirname, '..', 'screen-export.user.js'), 'utf8');
 test('metadata enables menu registration and limits storage access to userscript settings', () => {
     assert.match(source, /@match\s+https:\/\/\*\/\*/);
     assert.doesNotMatch(source, /@match\s+http:\/\//);
@@ -122,7 +122,7 @@ async function domTests(script, examples, pixhostHTML) {
     globalThis.GM_download = () => { throw new Error('Unexpected download'); };
     globalThis.GM_cookie = { list() { throw new Error('Unexpected cookie access'); } };
     const exposed = script.replace('        chooseArea();\n    }\n})();', `
-        globalThis.rehost = { httpURL, unwrapURL, originalURL, columnNames, imageInfo, inertHTML, detect, scan,
+        globalThis.screenExport = { httpURL, unwrapURL, originalURL, columnNames, imageInfo, inertHTML, detect, scan,
             selectRange, fetchOriginal, imageFile, request, upload, download, zipArchive, filename, slowToken, state,
             showArea, chooseArea, expandArea, close, dialog, picker, candidates, columns, names,
             uploadButton, downloadButton, summary, settings, preview, run, status, resetButton, result, browserID,
@@ -154,18 +154,18 @@ async function domTests(script, examples, pixhostHTML) {
         configureKey('');
         equal(keyMenu().label, 'TMDB API key: not set');
         equal(menus.size, 4);
-        ok(!document.getElementById('comps-rehost-dialog'));
+        ok(!document.getElementById('screen-export-dialog'));
         equal(calls.length, 0);
     });
     await test('launch menu installs only the picker, without resolving images or accessing cookies', () => {
         launchFromMenu();
         equal(calls.length, 0);
-        ok(!rehost.picker.hidden && !rehost.dialog.open);
-        ok(!rehost.dialog.querySelector('input[type="password"]'));
-        ok(![...rehost.picker.querySelectorAll('button'), ...rehost.dialog.querySelectorAll('button')]
+        ok(!screenExport.picker.hidden && !screenExport.dialog.open);
+        ok(!screenExport.dialog.querySelector('input[type="password"]'));
+        ok(![...screenExport.picker.querySelectorAll('button'), ...screenExport.dialog.querySelectorAll('button')]
             .some(button => button.textContent === 'Settings'));
     });
-    const api = globalThis.rehost;
+    const api = globalThis.screenExport;
     if (!api) return results;
     const controller = () => new AbortController();
     const fixture = html => {
@@ -774,7 +774,7 @@ async function domTests(script, examples, pixhostHTML) {
         equal(api.tmdbResultsButton.getAttribute('aria-expanded'), 'true');
         equal(api.tmdbResults.getRootNode().activeElement, api.tmdbResults.children[0]);
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
-        ok(api.tmdbResults.hidden && document.getElementById('comps-rehost-dialog'));
+        ok(api.tmdbResults.hidden && document.getElementById('screen-export-dialog'));
         api.tmdbResultsButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
         equal(api.tmdbResults.getRootNode().activeElement, api.tmdbResults.children[1]);
         api.tmdbResults.children[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
@@ -1158,29 +1158,29 @@ async function domTests(script, examples, pixhostHTML) {
         ok(!calls.find(call => call.url.endsWith('/upload/comparison')).data.has('tmdbId'));
         api.resetButton.click();
         launchFromMenu();
-        equal(document.querySelectorAll('#comps-rehost-dialog').length, 1);
+        equal(document.querySelectorAll('#screen-export-dialog').length, 1);
         api.dialog.querySelector('button[aria-label="Close"]').click();
         equal(menus.size, 4);
         root.querySelector('img').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         equal(pageClicks, 1);
         root.remove();
-        ok(!document.getElementById('comps-rehost-dialog'));
+        ok(!document.getElementById('screen-export-dialog'));
     });
     await test('Escape removes the picker and its temporary click listeners', () => {
         document.title = 'Example.Show.S02E03.1080p';
         launchFromMenu();
-        equal(rehost.tmdbType.value, 'TV');
+        equal(screenExport.tmdbType.value, 'TV');
         equal(savedSettings.get('tmdb_api_key'), 'test-key');
-        ok(!rehost.tmdbSearchSection.hidden);
+        ok(!screenExport.tmdbSearchSection.hidden);
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
-        ok(!document.getElementById('comps-rehost-dialog'));
+        ok(!document.getElementById('screen-export-dialog'));
         const click = new MouseEvent('click', { bubbles: true, cancelable: true });
         document.body.dispatchEvent(click);
         ok(!click.defaultPrevented);
     });
     // Standalone workflows use the same mocked DOM and transfers, in a fresh dialog.
     launchFromMenu();
-    const imagesAPI = rehost;
+    const imagesAPI = screenExport;
     const standaloneItems = Array.from({ length: 3 }, (_, i) => ({ source: `https://images.test/standalone-${i}.png`, preview: `https://images.test/standalone-${i}.png` }));
     const chooseHost = value => { imagesAPI.destination.value = value; imagesAPI.destination.dispatchEvent(new Event('change')); };
     const setWidth = value => { imagesAPI.width.value = value; imagesAPI.width.dispatchEvent(new Event('input')); };
@@ -1426,20 +1426,20 @@ async function domTests(script, examples, pixhostHTML) {
         equal(imagesAPI.state.job, null);
         calls.length = 0;
         launchFromMenu();
-        equal(rehost.width.value, '400');
-        equal(rehost.destination.value, 'slowpics');
-        rehost.width.value = '';
-        rehost.width.dispatchEvent(new Event('input'));
-        rehost.close();
+        equal(screenExport.width.value, '400');
+        equal(screenExport.destination.value, 'slowpics');
+        screenExport.width.value = '';
+        screenExport.width.dispatchEvent(new Event('input'));
+        screenExport.close();
         launchFromMenu();
-        equal(rehost.width.value, '');
+        equal(screenExport.width.value, '');
         equal(calls.length, 0);
         const root = fixture(`<div>${img('single')}</div>`);
-        equal(rehost.detect(root.querySelector('img')).images.length, 1);
-        rehost.close();
+        equal(screenExport.detect(root.querySelector('img')).images.length, 1);
+        screenExport.close();
     });
     launchFromMenu();
-    const comparisonAPI = rehost;
+    const comparisonAPI = screenExport;
     // Sanitized version of the embedded data in tmp/slowpics_page.html.
     const comparisonData = {
         key: 'collection-key', name: 'Example Film - GroupA vs GroupB',

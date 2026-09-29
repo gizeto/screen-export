@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         comps-rehost
+// @name         Screen Export
 // @namespace    https://github.com/gizeto
 // @version      1.2.1
-// @description  Select images, upload comparisons to slow.pics or originals to PTScreens, ImgBB and Pixhost, or download originals.
+// @description  Export selected images to comparison and image hosts, or download originals as a ZIP.
 // @author       gizeto
 // @match        https://*/*
 // @run-at       document-end
@@ -59,11 +59,11 @@
     Object.keys(keySettings).forEach(registerKeyMenu);
 
     function launch() {
-        const HOST_ID = 'comps-rehost-dialog';
+        const HOST_ID = 'screen-export-dialog';
         const SLOW = 'https://slow.pics';
         const existing = document.getElementById(HOST_ID);
         if (existing) {
-            existing.dispatchEvent(new Event('comps-rehost-focus'));
+            existing.dispatchEvent(new Event('screen-export-focus'));
             return;
         }
         const diagnostics = [];
@@ -76,7 +76,7 @@
             diagnostics.push(line);
             if (diagnostics.length > 200) diagnostics.shift();
             debugOutput.textContent = diagnostics.join('\n');
-            console.info('[comps-rehost]', line);
+            console.info('[screen-export]', line);
         }
 
         function requestLabel(url) {
@@ -1069,7 +1069,7 @@
                 state.selected = new Set(state.images.map((_, i) => i)); state.anchor = null; update();
             }), button('Clear', () => { state.selected.clear(); state.anchor = null; update(); }),
                 hint('image-selection-help', 'Image selection help', 'Click to toggle · Shift-click to select a range · Image order follows the selected images on the page: row by row, or all of column 1, then column 2, etc.')), candidates));
-        dialog.append(element('div', { className: 'dialog-header' }, element('h2', { textContent: 'Rehost images' }),
+        dialog.append(element('div', { className: 'dialog-header' }, element('h2', { textContent: 'Screen Export' }),
             element('button', { type: 'button', className: 'close', textContent: '×', ariaLabel: 'Close', title: 'Close', onclick: close })),
             settings, widthSection, summary, element('div', { className: 'preview' }, preview),
             element('div', { className: 'controls' }, uploadButton, downloadButton, cancelButton, resetButton), status, result, debugPanel,
@@ -1402,7 +1402,7 @@
                 else close();
             }
         }, { capture: true, signal: lifetime.signal });
-        host.addEventListener('comps-rehost-focus', () => {
+        host.addEventListener('screen-export-focus', () => {
             if (dialog.open) dialog.focus();
             else picker.querySelector('button').focus();
         }, { signal: lifetime.signal });
