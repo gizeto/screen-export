@@ -4,7 +4,6 @@
 // @version      1.2.1
 // @description  Select images, upload comparisons to slow.pics or originals to PTScreens, ImgBB and Pixhost, or download originals.
 // @author       gizeto
-// @match        http://*/*
 // @match        https://*/*
 // @run-at       document-end
 // @sandbox      DOM

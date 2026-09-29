@@ -45,6 +45,8 @@ async function readZIP(blob) {
 
 const source = readFileSync(join(__dirname, '..', 'comps-rehost.user.js'), 'utf8');
 test('metadata enables menu registration and limits storage access to userscript settings', () => {
+    assert.match(source, /@match\s+https:\/\/\*\/\*/);
+    assert.doesNotMatch(source, /@match\s+http:\/\//);
     assert.match(source, /@run-at\s+document-end/);
     assert.match(source, /@sandbox\s+DOM/);
     assert.doesNotMatch(source, /@(?:require|resource|icon)\s|@grant\s+unsafeWindow/);
