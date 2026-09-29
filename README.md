@@ -2,7 +2,7 @@
 
 Export selected images to comparison and image hosts, or download originals as a ZIP.
 
-Install [screen-export.user.js](screen-export.user.js) in **Chrome with Tampermonkey 5.4.6226 or newer**. Enable Tampermonkey's downloads permission and allow the ZIP extension in its download settings.
+Install [screen-export.user.js](https://raw.githubusercontent.com/gizeto/screen-export/master/screen-export.user.js) in **Chrome with Tampermonkey 5.4 or newer**. ZIP downloads require `GM_download` support for `Blob` objects, introduced in [stable 5.4.0](https://www.tampermonkey.net/changelog.php) (beta 5.4.6226). Enable Tampermonkey's downloads permission and allow the ZIP extension in its download settings.
 
 ## Usage
 
@@ -28,7 +28,9 @@ Enter `movie/123` or `tv/456` in **TMDB id**, or configure a **TMDB API key** in
 - Access blocks and rate limits stop transfers. Check normal access to the host before retrying. **Debug log → Copy debug log** provides diagnostics without API keys, cookies or image paths.
 - Images must exist as accessible `<img>` elements. Open collapsed content first and review automatic selection and column suggestions.
 
-No network requests or image scanning occur before launching the picker. Previews can load afterward; original-image requests begin with an upload or download action. Tampermonkey may request permission for image hosts. Live upload compatibility is not covered by automated tests.
+The script makes no network requests or image scans before launching the picker. Previews can load afterward; original-image requests begin with an upload or download action. Tampermonkey may request permission for image hosts. Live upload compatibility is not covered by automated tests.
+
+The userscript icon is [Images from Bootstrap Icons](https://icons.getbootstrap.com/icons/images/) ([MIT license](https://github.com/twbs/icons/blob/v1.13.1/LICENSE)); Tampermonkey fetches it separately from GitHub.
 
 ## Development
 

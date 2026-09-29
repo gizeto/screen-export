@@ -49,7 +49,7 @@ test('metadata enables menu registration and limits storage access to userscript
     assert.doesNotMatch(source, /@match\s+http:\/\//);
     assert.match(source, /@run-at\s+document-end/);
     assert.match(source, /@sandbox\s+DOM/);
-    assert.doesNotMatch(source, /@(?:require|resource|icon)\s|@grant\s+unsafeWindow/);
+    assert.doesNotMatch(source, /@(?:require|resource)\s|@grant\s+unsafeWindow/);
     assert.match(source, /@grant\s+GM_getValue/);
     assert.match(source, /@grant\s+GM_setValue/);
     assert.match(source, /@grant\s+GM_registerMenuCommand/);
