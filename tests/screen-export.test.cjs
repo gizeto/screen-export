@@ -190,6 +190,10 @@ async function domTests(script) {
             ['Example.Show.S02E03.720p.WEB-DL-GroupName :: Site', 'Example Show S02 720p'],
             ['2001 A Space Odyssey 1968 1080p BluRay-GroupName', '2001 A Space Odyssey 1968 1080p'],
             ['Example Film (2020) 2160p WEB-DL-GroupName', 'Example Film 2020 2160p'],
+            ['SiteA :: Details for torrent "Example Film 2019 1080p BluRay DTS 5.1 x264-GroupA" SiteA',
+                'Example Film 2019 1080p'],
+            ['SiteB :: Details for torrent "Example Tree 2026 Bluray 1080p x264 DTS-HD MA 5.1-GroupA" SiteB - Powered by NexusPHP',
+                'Example Tree 2026 1080p'],
             ['', 'Comparison'], ['Site :: Browse torrents', 'Comparison'], ['1080p releases', 'Comparison']
         ];
         for (const [input, expected] of cases) {

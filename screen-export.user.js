@@ -186,7 +186,8 @@
         }
 
         function collectionName(pageTitle, labels) {
-            const normalized = pageTitle.replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
+            const normalized = (pageTitle.match(/\bDetails for torrent "([^"]+)"/i)?.[1] || pageTitle)
+                .replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
             const resolution = /\b(?:480[pi]|576[pi]|720p|1080[pi]|2160p|4320p)\b/i.exec(normalized);
             let base = 'Comparison';
             if (resolution) {
