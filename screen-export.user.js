@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screen Export
 // @namespace    https://github.com/gizeto/screen-export
-// @version      1.2.4
+// @version      1.2.5
 // @description  Export selected images to comparison and image hosts, or download originals as a ZIP.
 // @author       gizeto
 // @downloadURL  https://raw.githubusercontent.com/gizeto/screen-export/master/screen-export.user.js
@@ -81,12 +81,6 @@
             if (diagnostics.length > 200) diagnostics.shift();
             debugOutput.textContent = diagnostics.join('\n');
             console.info('[screen-export]', line);
-        }
-
-        function requestLabel(url) {
-            const parsed = new URL(url);
-            return parsed.origin + (parsed.origin === SLOW && ['/comparison', '/upload/comparison', '/upload/image'].includes(parsed.pathname)
-                ? parsed.pathname : '/[redacted]');
         }
 
         function responseHeader(response, name) {
@@ -322,19 +316,20 @@
         async function request(url, options, signal) {
             if (!httpURL(url)) throw new Error('Only HTTP(S) image URLs are supported.');
             checkAbort(signal);
-            const origin = new URL(url).origin;
+            const { origin, hostname, pathname } = new URL(url);
+            const target = origin + (origin === SLOW && ['/comparison', '/upload/comparison', '/upload/image'].includes(pathname)
+                ? pathname : '/[redacted]');
             const wait = Math.ceil(((retryAfter.get(origin) || 0) - Date.now()) / 1000);
             if (wait > 0) {
-                debug('request-deferred', { target: requestLabel(url), waitSeconds: wait });
-                throw Object.assign(new Error(`${new URL(url).hostname}: wait ${wait}s as requested by the host before retrying.`), { stopTransfer: true });
+                debug('request-deferred', { target, waitSeconds: wait });
+                throw Object.assign(new Error(`${hostname}: wait ${wait}s as requested by the host before retrying.`), { stopTransfer: true });
             }
             const id = ++requestNumber;
             const method = options.method || 'GET';
-            const target = requestLabel(url);
             debug('request', { id, method, target, csrf: !!(options.headers?.['X-XSRF-TOKEN'] || options.headers?.['X-CSRF-TOKEN']),
                 slowPicsCookies: options.cookiePartition?.topLevelSite === SLOW && options.anonymous === false });
             let response;
-            try { response = await transfer(GM_xmlhttpRequest, { method: 'GET', url, ...options }, signal); }
+            try { response = await transfer(GM_xmlhttpRequest, { ...options, method, url }, signal); }
             catch (error) {
                 debug('request-failed', { id, method, target, category: error.name === 'AbortError' ? 'cancelled' : 'network-or-timeout' });
                 throw error;
@@ -493,11 +488,10 @@
             const url = new URL(`https://api.themoviedb.org/3/search/${type.toLowerCase()}`);
             url.searchParams.set('query', query.trim());
             url.searchParams.set('include_adult', 'false');
-            const headers = { Accept: 'application/json' };
             url.searchParams.set('api_key', apiKey.trim());
             let response;
             try {
-                response = await request(url.href, { headers, anonymous: true }, signal);
+                response = await request(url.href, { headers: { Accept: 'application/json' }, anonymous: true }, signal);
             } catch (error) {
                 if (error.name === 'AbortError') throw error;
                 if (error.status === 401) throw new Error('TMDB rejected the API key. Check the TMDB API key in the Tampermonkey menu.');
@@ -506,7 +500,7 @@
             }
             let data;
             try { data = JSON.parse(response.responseText); } catch { throw new Error('TMDB returned an invalid search response.'); }
-            if (!Array.isArray(data.results)) throw new Error('TMDB returned an invalid search response.');
+            if (!Array.isArray(data?.results)) throw new Error('TMDB returned an invalid search response.');
             return data.results.filter(item => item && Number.isSafeInteger(item.id) && item.id > 0
                 && typeof (type === 'MOVIE' ? item.title : item.name) === 'string').map(item => ({
                 id: String(item.id), title: type === 'MOVIE' ? item.title : item.name,
@@ -544,15 +538,6 @@
             return data;
         }
 
-        function browserID() {
-            // getRandomValues also works on HTTP pages; randomUUID requires a secure context.
-            const bytes = crypto.getRandomValues(new Uint8Array(16));
-            bytes[6] = (bytes[6] & 15) | 64;
-            bytes[8] = (bytes[8] & 63) | 128;
-            const hex = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
-            return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
-        }
-
         async function upload(job, signal, status) {
             requireCompleteRows(job.items, job.names);
             const prefixes = fileColumns(job.names);
@@ -566,7 +551,7 @@
                 try { collection = JSON.parse(response.responseText); }
                 catch { throw new Error('slow.pics did not return a comparison. Open slow.pics/comparison to check login or a challenge.'); }
                 const rows = job.items.length / job.names.length;
-                if (typeof collection.collectionUuid !== 'string' || !collection.collectionUuid
+                if (typeof collection?.collectionUuid !== 'string' || !collection.collectionUuid
                     || !/^[\w-]+$/.test(collection.key || '') || !Array.isArray(collection.images)
                     || collection.images.length !== rows || !collection.images.every(row => Array.isArray(row)
                         && row.length === job.names.length && row.every(id => typeof id === 'string' && id))
@@ -1208,8 +1193,9 @@
         }
 
         function updateNames(values = getNames()) {
-            columns.value = String(countColumns());
-            names.replaceChildren(...Array.from({ length: countColumns() }, (_, i) => element('input', {
+            const n = countColumns();
+            columns.value = String(n);
+            names.replaceChildren(...Array.from({ length: n }, (_, i) => element('input', {
                 value: values[i] || `Column ${i + 1}`, ariaLabel: `Column ${i + 1} name`, oninput: update
             })));
         }
@@ -1320,38 +1306,39 @@
 
         async function run(kind) {
             if (state.active) return;
+            const uploading = kind === 'upload';
             const standalone = destination.value !== 'slowpics';
             const items = selectedImages(), labels = standalone ? ['Image'] : getNames();
             let tmdbId = '';
             try {
                 requireCompleteRows(items, labels);
                 fileColumns(labels);
-                if (kind === 'upload') {
+                if (uploading) {
                     if (standalone) hostKey(destination.value);
                     else if (!state.job) tmdbId = tmdbReference(tmdbInput.value);
                 }
             }
             catch (error) { status.textContent = error.message; return; }
-            if (kind === 'download' || !state.job) clearJPEGWarning();
+            if (!uploading || !state.job) clearJPEGWarning();
             if (tmdbSearchController) resetTMDBResults();
             setTMDBResultsOpen(false);
             const controller = new AbortController();
             state.active = controller;
-            if (kind === 'upload' && !standalone) result.replaceChildren();
+            if (uploading && !standalone) result.replaceChildren();
             const report = message => { status.textContent = message; };
-            debug('transfer-start', { kind, images: items.length, columns: labels.length, completed: kind === 'upload' ? state.job?.done || 0 : 0 });
+            debug('transfer-start', { kind, images: items.length, columns: labels.length, completed: uploading ? state.job?.done || 0 : 0 });
             try {
-                if (kind === 'upload' && standalone) {
-                    state.job ||= { destination: destination.value, items, nsfw: nsfw.checked, done: 0, pending: null, results: [] };
-                    update();
+                if (uploading) {
+                    state.job ||= standalone
+                        ? { destination: destination.value, items, nsfw: nsfw.checked, done: 0, pending: null, results: [] }
+                        : { items, names: labels, title: title.value.trim() || 'Comparison', public: publicInput.checked, tmdbId,
+                            browserId: crypto.randomUUID(), done: 0, collection: null, pending: null };
+                }
+                update();
+                if (uploading && standalone) {
                     await uploadImages(state.job, controller.signal, report, renderImageResults);
-                    report(`Complete — ${state.job.done} images uploaded.`);
-                } else if (kind === 'upload') {
-                    state.job ||= { items, names: labels, title: title.value.trim() || 'Comparison', public: publicInput.checked, tmdbId,
-                        browserId: browserID(), done: 0, collection: null, pending: null };
-                    update();
+                } else if (uploading) {
                     const url = await upload(state.job, controller.signal, report);
-                    report(`Complete — ${state.job.done} images uploaded.`);
                     const completedJob = state.job;
                     const comparisonOutput = element('textarea', { readOnly: true, hidden: true, ariaLabel: 'Comparison BBCode' });
                     const comparisonCopy = button('Copy BBCode', () => copyComparisonBBCode(completedJob, comparisonOutput, comparisonCopy));
@@ -1361,16 +1348,16 @@
                             catch { report('Clipboard access was denied. Select and copy the displayed link.'); }
                         }), comparisonCopy, comparisonOutput);
                 } else {
-                    update();
                     const archiveTitle = standalone ? collectionName(document.title, [])
                         : title.value.trim() || collectionName(document.title, labels);
                     await download(items, labels, controller.signal, report, archiveTitle);
                 }
+                if (uploading) report(`Complete — ${state.job.done} images uploaded.`);
             } catch (error) {
-                const progress = kind === 'upload' && state.job ? ` ${state.job.done}/${state.job.items.length} uploaded.` : '';
+                const progress = uploading && state.job ? ` ${state.job.done}/${state.job.items.length} uploaded.` : '';
                 report(`${error.name === 'AbortError' ? 'Cancelled.' : error.message}${progress}`
-                    + (kind === 'upload' && standalone && state.job ? ' Completed results are kept. Retry resumes at the first unconfirmed image; a lost response may cause a duplicate.' : '')
-                    + (kind === 'upload' && state.job?.collection ? ' The remote collection is incomplete. After resolving the error, retry upload to resume, or start over to change the selection.' : ''));
+                    + (uploading && standalone && state.job ? ' Completed results are kept. Retry resumes at the first unconfirmed image; a lost response may cause a duplicate.' : '')
+                    + (uploading && state.job?.collection ? ' The remote collection is incomplete. After resolving the error, retry upload to resume, or start over to change the selection.' : ''));
             } finally {
                 state.active = null;
                 if (host.isConnected) update();
@@ -1433,7 +1420,7 @@
             if (dialog.open) dialog.focus();
             else picker.querySelector('button').focus();
         }, { signal: lifetime.signal });
-        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.2.3',
+        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : 'unknown',
             manager: typeof GM_info === 'object' ? GM_info.scriptHandler : 'unknown',
             managerVersion: typeof GM_info === 'object' ? GM_info.version : 'unknown' });
         chooseArea();

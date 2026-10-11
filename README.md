@@ -13,7 +13,7 @@ Install [screen-export.user.js](https://raw.githubusercontent.com/gizeto/screen-
 
 For **slow.pics**, review the suggested collection and column names. Choose **Row by row** or **Column by column** to match the page, and check the preview. Every column must have the same number of images. Collections are unlisted unless **Public on slow.pics** is checked.
 
-For **PTScreens**, **ImgBB** or **LostImg** (`lostimg.cc`), set the corresponding API key in Tampermonkey's menu. **Pixhost** needs no key. Standalone uploads accept any image count and follow page order. Results include copyable BBCode; **BBCode image width** changes its formatting without resizing or reuploading images.
+For **PTScreens**, **ImgBB** or **LostImg**, set the corresponding API key in Tampermonkey's menu. **Pixhost** needs no key. Standalone uploads accept any image count and follow page order. Results include copyable BBCode; **BBCode image width** changes its formatting without resizing or reuploading images.
 
 Downloads save originals in one ZIP, named after the collection for slow.pics or the movie/TV title for image hosts. Archives must be smaller than 4 GiB.
 

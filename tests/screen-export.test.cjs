@@ -125,7 +125,7 @@ async function domTests(script) {
         globalThis.screenExport = { httpURL, unwrapURL, originalURL, columnNames, imageInfo, inertHTML, detect, scan,
             selectRange, fetchOriginal, imageFile, request, upload, download, zipArchive, filename, slowToken, state,
             showArea, chooseArea, expandArea, close, dialog, picker, candidates, columns, names,
-            uploadButton, downloadButton, summary, settings, preview, run, status, resetButton, result, browserID,
+            uploadButton, downloadButton, summary, settings, preview, run, status, resetButton, result,
             diagnostics, retryAfter, slowRequest, fileColumns, collectionName, title, publicInput,
             tmdbReference, comparisonFields, tmdbType, tmdbInput, tmdbError, searchTMDB, findTMDB,
             tmdbQuery, tmdbSearchSection, tmdbSearchHint, imageOrder, selectedImages, suggestedMediaType,
@@ -417,7 +417,6 @@ async function domTests(script) {
         equal(api.originalURL(`https://${imageHostDomain}.evil.test/Ab12`), `https://${imageHostDomain}.evil.test/Ab12`);
         equal(api.httpURL('javascript:alert(1)'), '');
         equal(api.httpURL('https://user:password@example.test/image.png'), '');
-        ok(/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/.test(api.browserID()));
     });
     const pngBytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='), char => char.charCodeAt(0));
     const png = new Blob([pngBytes], { type: 'image/png' });
@@ -685,7 +684,7 @@ async function domTests(script) {
         equal(calls.length, 0);
         handler = () => ({ status: 401 });
         await rejects(() => api.searchTMDB('MOVIE', 'Example', 'key', controller().signal), /rejected the API key/);
-        for (const responseText of ['not json', '{}']) {
+        for (const responseText of ['not json', '{}', 'null', '[]']) {
             handler = () => ({ responseText });
             await rejects(() => api.searchTMDB('MOVIE', 'Example', 'key', controller().signal), /invalid search response/);
         }
@@ -866,11 +865,16 @@ async function domTests(script) {
         await rejects(() => api.comparisonBBCode({ ...job, names: ['GroupA, GroupB', 'GroupC'] }, urls), /column names/);
     });
     await test('malformed comparison responses and unsuccessful image acknowledgements never report success', async () => {
-        handler = options => options.method === 'GET' ? { responseText: '<meta name="csrf-token" content="token">' }
-            : { responseText: JSON.stringify({ collectionUuid: 'c', key: 'k', images: [['only-one']] }) };
         const job = { items: [{ source: 'https://images.test/a.png' }, { source: 'https://images.test/b.png' }], names: ['A', 'B'], title: 'Test', public: true, browserId: 'id', done: 0 };
-        await rejects(() => api.upload(job, controller().signal, () => {}), /Unexpected slow.pics/);
-        equal(job.done, 0);
+        for (const collection of [null, [], {}, { collectionUuid: 'c', key: 'k', images: [['only-one']] }]) {
+            calls.length = 0;
+            handler = options => options.method === 'GET' ? { responseText: '<meta name="csrf-token" content="token">' }
+                : { responseText: JSON.stringify(collection) };
+            await rejects(() => api.upload(job, controller().signal, () => {}), /Unexpected slow.pics/);
+            equal(job.done, 0);
+            ok(!job.collection);
+            ok(!calls.some(call => call.url.startsWith('https://images.test/')));
+        }
         job.collection = { collectionUuid: 'c', key: 'k', images: [['a', 'b']] };
         handler = options => options.url.endsWith('/comparison') ? { responseHeaders: 'Set-Cookie: XSRF-TOKEN=token;' }
             : options.method === 'POST' ? { responseText: 'FAILED' } : imageResponse();
@@ -1004,6 +1008,8 @@ async function domTests(script) {
             return imageResponse();
         };
         await api.run('upload');
+        const create = calls.find(call => call.url.endsWith('/upload/comparison'));
+        ok(/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/.test(create.data.get('browserId')));
         equal(calls.filter(call => call.url.startsWith('https://images.test/')).map(call => call.url), expected);
         const uploads = calls.filter(call => call.url.endsWith('/upload/image'));
         equal(uploads.map(call => call.data.get('imageUuid')), ['a1', 'b1', 'a2', 'b2', 'a3', 'b3']);
