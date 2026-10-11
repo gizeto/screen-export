@@ -35,4 +35,4 @@ The userscript icon is [Images from Bootstrap Icons](https://icons.getbootstrap.
 
 ## Development
 
-Run `npm ci`, then `node --test tests/*.test.cjs`. Tests use Node and jsdom with mocked browser APIs and transfers; no browser or live hosts are used. Local reference files belong in the Git-ignored `tmp/` directory. See [AGENTS.md](AGENTS.md) for development rules.
+Run `npm ci`, then `node --test tests/*.test.cjs`. Tests use Node and jsdom with mocked browser APIs and transfers; no browser or live hosts are used. See [AGENTS.md](AGENTS.md) for development rules.
