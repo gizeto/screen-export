@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screen Export
 // @namespace    https://github.com/gizeto/screen-export
-// @version      1.2.3
+// @version      1.2.4
 // @description  Export selected images to comparison and image hosts, or download originals as a ZIP.
 // @author       gizeto
 // @downloadURL  https://raw.githubusercontent.com/gizeto/screen-export/master/screen-export.user.js
@@ -22,6 +22,7 @@
 // @connect      imgbb.com
 // @connect      api.imgbb.com
 // @connect      api.pixhost.to
+// @connect      lostimg.cc
 // @connect      self
 // @connect      slow.pics
 // @connect      api.themoviedb.org
@@ -38,7 +39,7 @@
 
     let refreshOpenSettings = null;
     const keyMenus = new Map();
-    const keySettings = { tmdb_api_key: 'TMDB', ptscreens_api_key: 'PTScreens', imgbb_api_key: 'ImgBB' };
+    const keySettings = { tmdb_api_key: 'TMDB', ptscreens_api_key: 'PTScreens', imgbb_api_key: 'ImgBB', lostimg_api_key: 'LostImg' };
 
     function savedKey(key) {
         const value = GM_getValue(key, '');
@@ -640,8 +641,8 @@
         const imageHosts = {
             ptscreens: { label: 'PTScreens', key: 'ptscreens_api_key', url: 'https://ptscreens.com/api/1/upload' },
             imgbb: { label: 'ImgBB', key: 'imgbb_api_key', url: 'https://api.imgbb.com/1/upload', maxSize: 32 * 1024 * 1024 },
-            pixhost: { label: 'Pixhost', url: 'https://api.pixhost.to/images', maxSize: 10 * 1024 * 1024,
-                formats: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif'] }
+            lostimg: { label: 'LostImg', key: 'lostimg_api_key', url: 'https://lostimg.cc/api/v1/images', maxSize: 20000000 },
+            pixhost: { label: 'Pixhost', url: 'https://api.pixhost.to/images', maxSize: 10 * 1024 * 1024 }
         };
 
         function hostKey(destination) {
@@ -659,7 +660,9 @@
 
         function imageUploadResult(destination, data) {
             let pageUrl, original;
-            if (destination === 'pixhost') {
+            if (destination === 'lostimg') {
+                pageUrl = original = resultURL(data?.url);
+            } else if (destination === 'pixhost') {
                 pageUrl = resultURL(data?.show_url);
                 const thumb = resultURL(data?.th_url);
                 if (thumb && /^t\d+\.(?:pixhost\.(?:to|cc)|pixho\.st)$/.test(new URL(thumb).hostname)
@@ -677,8 +680,10 @@
 
         async function uploadImage(destination, file, name, nsfw, key, signal) {
             const config = imageHosts[destination];
-            if (config.maxSize && file.blob.size > config.maxSize) throw new Error(`${config.label}: image exceeds the ${config.maxSize / 1024 / 1024} MB limit.`);
-            if (config.formats && !config.formats.includes(file.blob.type)) throw new Error(`${config.label} does not support ${file.blob.type}. Choose another destination.`);
+            if (config.maxSize && file.blob.size > config.maxSize) throw new Error(`${config.label}: image exceeds the ${config.maxSize} byte limit.`);
+            if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif'].includes(file.blob.type)) {
+                throw new Error(`${config.label} does not support ${file.blob.type}. Choose another destination.`);
+            }
             const data = new FormData();
             const headers = { Accept: 'application/json' };
             if (destination === 'ptscreens') {
@@ -690,6 +695,9 @@
             } else if (destination === 'imgbb') {
                 data.append('key', key);
                 data.append('image', file.blob, name);
+            } else if (destination === 'lostimg') {
+                headers.Authorization = `Bearer ${key}`;
+                data.append('file[]', file.blob, name);
             } else {
                 data.append('img', file.blob, name);
                 data.append('content_type', nsfw ? '1' : '0');

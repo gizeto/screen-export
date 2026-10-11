@@ -140,7 +140,7 @@ async function domTests(script) {
         (0, eval)(exposed);
         equal(document.documentElement.innerHTML, before);
         equal(calls.length, 0);
-        equal([...menus.values()].map(menu => menu.label), ['Select comparison images', 'TMDB API key: not set', 'PTScreens API key: not set', 'ImgBB API key: not set']);
+        equal([...menus.values()].map(menu => menu.label), ['Select comparison images', 'TMDB API key: not set', 'PTScreens API key: not set', 'ImgBB API key: not set', 'LostImg API key: not set']);
         equal([...savedSettings], []);
     });
     await test('TMDB menu configures the key before launching and updates its status without duplicates', () => {
@@ -153,7 +153,7 @@ async function domTests(script) {
         ok(!JSON.stringify(prompts).includes('BEFORE_LAUNCH_KEY'));
         configureKey('');
         equal(keyMenu().label, 'TMDB API key: not set');
-        equal(menus.size, 4);
+        equal(menus.size, 5);
         ok(!document.getElementById('screen-export-dialog'));
         equal(calls.length, 0);
     });
@@ -613,7 +613,7 @@ async function domTests(script) {
     });
     await test('TMDB menu saves and clears the key and refreshes the open dialog without changing its reference', async () => {
         calls.length = 0;
-        ok(settingReads.every(key => ['tmdb_api_key', 'ptscreens_api_key', 'imgbb_api_key', 'image_bbcode_width'].includes(key)));
+        ok(settingReads.every(key => ['tmdb_api_key', 'ptscreens_api_key', 'imgbb_api_key', 'lostimg_api_key', 'image_bbcode_width'].includes(key)));
         ok(api.tmdbSearchSection.hidden && !api.tmdbSearchHint.hidden);
         ok(!api.tmdbInput.disabled && !api.tmdbInput.hidden);
         await api.findTMDB();
@@ -1110,7 +1110,7 @@ async function domTests(script) {
         launchFromMenu();
         equal(document.querySelectorAll('#screen-export-dialog').length, 1);
         api.dialog.querySelector('button[aria-label="Close"]').click();
-        equal(menus.size, 4);
+        equal(menus.size, 5);
         root.querySelector('img').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         equal(pageClicks, 1);
         root.remove();
@@ -1140,6 +1140,7 @@ async function domTests(script) {
     };
     const hostResponse = (host, id = 'one') => ({ responseText: JSON.stringify(host === 'pixhost'
         ? { show_url: `https://pixhost.to/show/123/${id}.png`, th_url: `https://t12.pixhost.to/thumbs/123/${id}.png` }
+        : host === 'lostimg' ? { url: `https://images.test/${id}.png` }
         : { success: true, status_code: 200, data: { url_viewer: `https://${host === 'imgbb' ? 'ibb.co' : 'ptscreens.com/image'}/${id}`,
             image: { url: `https://${host === 'imgbb' ? 'i.ibb.co' : 'img.ptscreens.com'}/${id}.png` },
             display_url: 'https://images.test/resized.png', medium: { url: 'https://images.test/medium.png' } } }) });
@@ -1167,9 +1168,16 @@ async function domTests(script) {
         equal(calls.length, 0);
         ok(imagesAPI.status.textContent.includes('PTScreens API key'));
         ok(!imagesAPI.state.job);
+        chooseHost('lostimg');
+        ok(imagesAPI.uploadButton.disabled && !imagesAPI.downloadButton.disabled);
+        equal(imagesAPI.uploadButton.textContent, 'Upload to LostImg');
+        await imagesAPI.run('upload');
+        equal(calls.length, 0);
+        ok(imagesAPI.status.textContent.includes('LostImg API key'));
+        ok(!imagesAPI.state.job);
     });
     await test('standalone key prompts save, clear and cancel without exposing saved keys', () => {
-        for (const [host, storage] of [['PTScreens', 'ptscreens_api_key'], ['ImgBB', 'imgbb_api_key']]) {
+        for (const [host, storage] of [['PTScreens', 'ptscreens_api_key'], ['ImgBB', 'imgbb_api_key'], ['LostImg', 'lostimg_api_key']]) {
             setHostKey(host, ` ${host}_SECRET `);
             equal(savedSettings.get(storage), `${host}_SECRET`);
             setHostKey(host, null);
@@ -1179,9 +1187,9 @@ async function domTests(script) {
             setHostKey(host, `${host}_SECRET`);
         }
         ok(!imagesAPI.uploadButton.disabled);
-        equal(menus.size, 4);
+        equal(menus.size, 5);
         ok(prompts.every(prompt => prompt.value === ''));
-        ok(!JSON.stringify(prompts).includes('PTScreens_SECRET'));
+        ok(!/_SECRET/.test(JSON.stringify(prompts)));
     });
     await test('host adapters preserve bytes, use correct fields and isolate credentials', async () => {
         calls.length = 0;
@@ -1228,6 +1236,9 @@ async function domTests(script) {
     await test('invalid host responses and unsafe BBCode URLs never count as success', async () => {
         for (const [host, data] of [
             ['imgbb', { success: false }], ['ptscreens', { status_code: 400 }], ['pixhost', {}],
+            ['lostimg', {}], ['lostimg', { error: 'Upload failed' }], ['lostimg', { url: ['https://images.test/a.png'] }],
+            ['lostimg', { url: 'javascript:alert(1)' }], ['lostimg', { url: 'https://images.test/a[img].png' }],
+            ['lostimg', { url: 'https://user:secret@images.test/a.png' }],
             ['pixhost', { show_url: 'https://pixhost.to/show/a', th_url: 'https://images.test/thumb.png' }],
             ['imgbb', { success: true, data: { url_viewer: 'javascript:alert(1)', image: { url: 'https://images.test/a.png' } } }],
             ['ptscreens', { status_code: 200, data: { url_viewer: 'https://ptscreens.com/image/a', image: { url: 'https://images.test/a[img].png' } } }],
@@ -1239,13 +1250,63 @@ async function domTests(script) {
         await rejects(() => imagesAPI.uploadImage('imgbb', { blob: png }, 'Image0001.png', false, 'ImgBB_SECRET', controller().signal), /failed or timed out/);
         ok(!imagesAPI.diagnostics.join('').includes('ImgBB_SECRET'));
     });
+    await test('LostImg uses bearer authentication, preserves small files and validates maximum size', async () => {
+        calls.length = 0;
+        const blob = png;
+        handler = () => hostResponse('lostimg');
+        const result = await imagesAPI.uploadImage('lostimg', { blob }, 'Image0001.png', false,
+            imagesAPI.hostKey('lostimg'), controller().signal);
+        equal(calls.length, 1);
+        const call = calls[0];
+        equal(call.url, 'https://lostimg.cc/api/v1/images');
+        equal(call.method, 'POST');
+        equal(call.headers, { Accept: 'application/json', Authorization: 'Bearer LostImg_SECRET' });
+        equal(call.anonymous, true);
+        equal(call.redirect, 'error');
+        equal(call.cookiePartition, undefined);
+        equal([...call.data.keys()], ['file[]']);
+        const file = call.data.get('file[]');
+        equal(file.name, 'Image0001.png');
+        equal(file.type, 'image/png');
+        equal([...new Uint8Array(await file.arrayBuffer())], [...new Uint8Array(await blob.arrayBuffer())]);
+        equal(result, { pageUrl: 'https://images.test/one.png', originalUrl: 'https://images.test/one.png' });
+        equal(imagesAPI.imageBBCode([result], '350'), '[url=https://images.test/one.png][img=350]https://images.test/one.png[/img][/url]');
+        calls.length = 0;
+        await rejects(() => imagesAPI.uploadImage('lostimg', { blob: { size: 20000001 } }, 'Image0001.png', false,
+            'LostImg_SECRET', controller().signal), /exceeds the 20000000 byte limit/);
+        equal(calls.length, 0);
+        await imagesAPI.uploadImage('lostimg', { blob: new Blob([new Uint8Array(20000000)], { type: 'image/png' }) },
+            'Image0001.png', false, 'LostImg_SECRET', controller().signal);
+        equal(calls.length, 1);
+        handler = () => ({ responseText: '<html>not JSON</html>' });
+        await rejects(() => imagesAPI.uploadImage('lostimg', { blob }, 'Image0001.png', false,
+            'LostImg_SECRET', controller().signal), /invalid upload response/);
+        handler = () => { throw new Error('network error containing LostImg_SECRET'); };
+        await rejects(() => imagesAPI.uploadImage('lostimg', { blob }, 'Image0001.png', false,
+            'LostImg_SECRET', controller().signal), /failed or timed out/);
+        ok(!imagesAPI.diagnostics.join('').includes('LostImg_SECRET'));
+    });
     await test('host limits reject incompatible images without upload requests', async () => {
         calls.length = 0;
-        for (const host of ['imgbb', 'pixhost']) {
+        for (const host of ['imgbb', 'pixhost', 'lostimg']) {
             await rejects(() => imagesAPI.uploadImage(host, { blob: { size: 40 * 1024 * 1024, type: 'image/png' } }, 'Image0001.png', false, '', controller().signal), /exceeds/);
         }
-        await rejects(() => imagesAPI.uploadImage('pixhost', { blob: new Blob(['BM'], { type: 'image/bmp' }) }, 'Image0001.bmp', false, '', controller().signal), /does not support/);
+        for (const host of ['ptscreens', 'imgbb', 'pixhost', 'lostimg']) {
+            for (const type of ['image/bmp', 'image/svg+xml', 'application/octet-stream']) {
+                await rejects(() => imagesAPI.uploadImage(host, { blob: new Blob(['data'], { type }) }, 'Image0001.bin', false, '', controller().signal), /does not support/);
+            }
+        }
         equal(calls.length, 0);
+    });
+    await test('all image hosts accept the shared image formats', async () => {
+        calls.length = 0;
+        for (const host of ['ptscreens', 'imgbb', 'pixhost', 'lostimg']) {
+            handler = () => hostResponse(host);
+            for (const type of ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif']) {
+                await imagesAPI.uploadImage(host, { blob: new Blob(['data'], { type }) }, 'Image0001', false, '', controller().signal);
+            }
+        }
+        equal(calls.length, 20);
     });
     await test('partial results remain copyable and retry skips successes with the latest saved key', async () => {
         calls.length = 0;
@@ -1313,7 +1374,7 @@ async function domTests(script) {
         imagesAPI.title.value = 'Hidden comparison title';
         imagesAPI.title.dispatchEvent(new Event('input'));
         const previousHost = imagesAPI.destination.value;
-        for (const host of ['ptscreens', 'imgbb', 'pixhost']) {
+        for (const host of ['ptscreens', 'imgbb', 'pixhost', 'lostimg']) {
             chooseHost(host);
             calls.length = 0;
             await imagesAPI.run('download');
