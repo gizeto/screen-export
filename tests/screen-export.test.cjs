@@ -312,6 +312,44 @@ async function domTests(script) {
         }
         equal(calls.length, 0);
     });
+    await test('teleported comparison templates expose every row in order and keep column names local', () => {
+        const comparison = (names, prefix) => `<div class="comparison" x-data="window.comparisonExpressionRan = true">
+            <div class="comparison__text">${names.join(' <span>vs</span> ')}: <button>Show</button></div>
+            <template x-teleport="body" data-teleport-template="true">
+                <div class="comparison__overlay" x-show="show" x-cloak>
+                    <div class="comparison__figcaption" x-html="comparates[column - 1]"></div>
+                    <ul class="comparison__screenshots">${Array.from({ length: 6 }, (_, row) => `<li>
+                        <ul class="comparison__row">${names.map((_, column) => `<li><figure><div class="bbcode-image">
+                            <span class="bbcode-image__frame">${img(`${prefix}-${row}-${column}`)}</span>
+                        </div></figure></li>`).join('')}</ul></li>`).join('')}</ul>
+                    <button>Zoom in</button>
+                    <template x-for="source in sources">${img('unrendered-source')}</template>
+                </div>
+            </template></div>`;
+        const root = fixture(`${img('poster')}${comparison(['GroupA', 'GroupB'], 'first')}
+            ${comparison(['GroupC', 'GroupD', 'GroupE'], 'second')}${img('extra-a')}${img('extra-b')}`);
+        for (const [index, group] of [...root.querySelectorAll('.comparison')].entries()) {
+            const expected = index ? ['GroupC', 'GroupD', 'GroupE'] : ['GroupA', 'GroupB'];
+            const images = [...group.querySelector('template').content.querySelectorAll('img')];
+            equal(images.length, 6 * expected.length);
+            for (const target of [group, ...group.querySelectorAll('.comparison__text, span, button')]) {
+                const area = api.detect(target);
+                ok(area.root === group);
+                equal(area.names, expected);
+                ok(area.images.every((item, i) => item.node === images[i]));
+                equal(area.images.map(item => item.source), images.map(image => image.src));
+            }
+        }
+        ok(!globalThis.comparisonExpressionRan);
+        equal(calls.length, 0);
+    });
+    await test('ordinary unrendered templates remain excluded from image and heading detection', () => {
+        const root = fixture(`<section>GroupA vs GroupB<br>${img('a')}${img('b')}
+            <template>GroupC vs GroupD${img('unrendered')}</template></section>`);
+        const area = api.detect(root.querySelector('section'));
+        equal(area.names, ['GroupA', 'GroupB']);
+        equal(area.images.map(item => item.source), ['https://images.test/a.png', 'https://images.test/b.png']);
+    });
     await test('code and raw BBCode are not column headings', () => {
         for (const content of ['<code>Source - Encode</code>', '[color=red]Source[/color] - Encode']) {
             const root = fixture(`<pre>${content}</pre><div>${img('a')}${img('b')}</div>`);

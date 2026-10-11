@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screen Export
 // @namespace    https://github.com/gizeto/screen-export
-// @version      1.2.5
+// @version      1.2.6
 // @description  Export selected images to comparison and image hosts, or download originals as a ZIP.
 // @author       gizeto
 // @downloadURL  https://raw.githubusercontent.com/gizeto/screen-export/master/screen-export.user.js
@@ -230,17 +230,18 @@
                     return;
                 }
                 if (node.nodeType !== Node.ELEMENT_NODE) return;
-                if (node.id === HOST_ID || /^(SCRIPT|STYLE|TEMPLATE|CODE|TEXTAREA|BUTTON|INPUT|SELECT|NOSCRIPT)$/.test(node.tagName)) {
+                if (node.id === HOST_ID || /^(SCRIPT|STYLE|CODE|TEXTAREA|BUTTON|INPUT|SELECT|NOSCRIPT)$/.test(node.tagName)
+                    || node.tagName === 'TEMPLATE' && !node.hasAttribute('x-teleport')) {
                     flush();
                     return;
                 }
-                const boundary = /^(BR|IMG|DIV|P|PRE|SECTION|ARTICLE|MAIN|HEADER|FOOTER|ASIDE|FIELDSET|CENTER|TABLE|TR|TD|TH|UL|OL|LI|FIGURE|FIGCAPTION|H[1-6])$/.test(node.tagName);
+                const boundary = /^(BR|IMG|DIV|P|PRE|SECTION|ARTICLE|MAIN|HEADER|FOOTER|ASIDE|FIELDSET|CENTER|TABLE|TR|TD|TH|UL|OL|LI|FIGURE|FIGCAPTION|TEMPLATE|H[1-6])$/.test(node.tagName);
                 if (boundary) flush();
                 if (node.tagName === 'IMG') {
                     const item = imageInfo(node);
                     if (item) images.push({ ...item, position: here });
                 } else {
-                    for (const child of node.childNodes) visit(child);
+                    for (const child of (node.tagName === 'TEMPLATE' ? node.content : node).childNodes) visit(child);
                 }
                 if (boundary) flush();
                 if (node === target) targetEndPosition = position;
