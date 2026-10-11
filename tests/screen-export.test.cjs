@@ -1371,6 +1371,89 @@ async function domTests(script) {
         equal(imagesAPI.state.job.done, 0);
         imagesAPI.resetButton.click();
     });
+    await test('JPEG originals warn before uploading, persist through retries and clear on start over', async () => {
+        const decoder = createImageBitmap;
+        const jpegBytes = [255, 216, 255, 224, 0, 16];
+        const jpeg = new Blob([Uint8Array.from(jpegBytes)], { type: 'image/png' });
+        const warning = imagesAPI.dialog.querySelector('.warning');
+        createImageBitmap = async blob => {
+            if (blob.type === 'image/jpeg') equal([...new Uint8Array(await blob.arrayBuffer())], jpegBytes);
+            else return decoder(blob);
+            return { close() {} };
+        };
+        try {
+            for (const host of ['slowpics', 'pixhost']) {
+                chooseHost(host);
+                imagesAPI.tmdbInput.value = '';
+                imagesAPI.showArea({ root: null, images: standaloneItems.slice(0, 2), names: ['GroupA', 'GroupB'] });
+                [...imagesAPI.candidates.children].forEach(tile => tile.click());
+                ok(warning.hidden && !warning.textContent);
+                let fail = true, fetched = 0, posts = 0;
+                handler = options => {
+                    if (options.url === 'https://slow.pics/comparison') return { responseHeaders: 'Set-Cookie: XSRF-TOKEN=token;' };
+                    if (options.url.endsWith('/upload/comparison')) return { responseText: JSON.stringify({
+                        collectionUuid: 'collection', key: 'key', images: [['a', 'b']] }) };
+                    if (options.method !== 'POST') {
+                        fetched++;
+                        return options.url === standaloneItems[0].source ? { response: jpeg } : imageResponse();
+                    }
+                    ok(!warning.hidden && warning.textContent.includes('JPEG (JPG)'));
+                    ok(imagesAPI.status.textContent.startsWith('Uploading image'));
+                    const file = options.data.get(host === 'slowpics' ? 'file' : 'img');
+                    equal(file.type, posts++ < 2 ? 'image/jpeg' : 'image/png');
+                    if (fail) { fail = false; return { status: 503 }; }
+                    return host === 'slowpics' ? { responseText: 'OK' } : hostResponse(host);
+                };
+                await imagesAPI.run('upload');
+                equal(imagesAPI.state.job.done, 0);
+                ok(!warning.hidden);
+                await imagesAPI.run('upload');
+                equal(imagesAPI.state.job.done, 2);
+                equal(fetched, 2);
+                ok(!warning.hidden && warning.textContent.includes('lossy compression'));
+                imagesAPI.resetButton.click();
+                ok(warning.hidden && !warning.textContent);
+            }
+        } finally {
+            createImageBitmap = decoder;
+            imagesAPI.resetButton.click();
+        }
+    });
+    await test('ZIP fetching warns from image bytes and clears the warning for a new PNG-only download', async () => {
+        const decoder = createImageBitmap;
+        const jpegBytes = [255, 216, 255, 224, 0, 16];
+        const jpeg = new Blob([Uint8Array.from(jpegBytes)], { type: 'application/octet-stream' });
+        const warning = imagesAPI.dialog.querySelector('.warning');
+        createImageBitmap = async blob => blob.type === 'image/jpeg' ? { close() {} } : decoder(blob);
+        let saved;
+        try {
+            chooseHost('pixhost');
+            imagesAPI.showArea({ root: null, images: standaloneItems.slice(0, 2), names: ['GroupA', 'GroupB'] });
+            [...imagesAPI.candidates.children].forEach(tile => tile.click());
+            handler = options => {
+                if (options.url === standaloneItems[0].source) return { response: jpeg };
+                ok(!warning.hidden && imagesAPI.status.textContent.startsWith('Fetching original 2/2'));
+                return imageResponse();
+            };
+            GM_download = options => {
+                ok(!warning.hidden);
+                saved = options;
+                queueMicrotask(() => options.onload());
+                return { abort() {} };
+            };
+            await imagesAPI.run('download');
+            equal((await readZIP(saved.url)).map(file => file.name), ['Image0001.jpg', 'Image0002.png']);
+            ok(!warning.hidden && imagesAPI.status.textContent.startsWith('Saved'));
+            imagesAPI.state.images[0] = { ...standaloneItems[0], source: 'https://images.test/misleading.jpg' };
+            handler = () => { ok(warning.hidden); return imageResponse(); };
+            GM_download = options => { queueMicrotask(() => options.onload()); return { abort() {} }; };
+            await imagesAPI.run('download');
+            ok(warning.hidden && !warning.textContent && imagesAPI.status.textContent.startsWith('Saved'));
+        } finally {
+            createImageBitmap = decoder;
+            GM_download = () => { throw new Error('Unexpected download'); };
+        }
+    });
     await test('width survives closing and reopening, including an explicitly blank value', () => {
         imagesAPI.close();
         equal(imagesAPI.state.job, null);

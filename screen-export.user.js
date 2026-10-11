@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screen Export
 // @namespace    https://github.com/gizeto/screen-export
-// @version      1.2.2
+// @version      1.2.3
 // @description  Export selected images to comparison and image hosts, or download originals as a ZIP.
 // @author       gizeto
 // @downloadURL  https://raw.githubusercontent.com/gizeto/screen-export/master/screen-export.user.js
@@ -389,6 +389,10 @@
             catch { throw new Error('The image is damaged or could not be decoded.'); }
             bitmap.close();
             checkAbort(signal);
+            if (format[0] === 'jpg') {
+                jpegWarning.textContent = 'Warning: a fetched original is JPEG (JPG), which uses lossy compression.';
+                jpegWarning.hidden = false;
+            }
             return { blob: file, extension: format[0] };
         }
 
@@ -926,6 +930,7 @@
             img { display: block; width: 100%; height: 85px; object-fit: contain; background: #111; }
             .preview { overflow: auto; } .preview .grid { min-width: min-content; } .preview figure { margin: 0; min-width: 110px; }
             figcaption { overflow-wrap: anywhere; } .status { white-space: pre-wrap; overflow-wrap: anywhere; }
+            .warning { color: #ffd479; }
             textarea { width: 100%; min-height: 110px; resize: vertical; }
             a { color: #9cceff; }
             @media (max-width: 720px) {
@@ -1035,6 +1040,11 @@
         const summary = element('p');
         const preview = element('div', { className: 'grid' });
         const status = element('p', { className: 'status', role: 'status' });
+        const jpegWarning = element('p', { className: 'warning', role: 'alert', hidden: true });
+        function clearJPEGWarning() {
+            jpegWarning.hidden = true;
+            jpegWarning.textContent = '';
+        }
         const debugOutput = element('pre', { style: 'max-height: 180px; overflow: auto; white-space: pre-wrap;' });
         const debugPanel = element('details', {}, element('summary', { textContent: 'Debug log' }),
             button('Copy debug log', async () => {
@@ -1048,6 +1058,7 @@
         const cancelButton = button('Cancel transfer', () => state.active?.abort());
         const resetButton = button('Start over', () => {
             state.job = null;
+            clearJPEGWarning();
             result.replaceChildren();
             status.textContent = 'Previous remote uploads are kept. You can change the selection now.';
             update();
@@ -1078,7 +1089,7 @@
         dialog.append(element('div', { className: 'dialog-header' }, element('h2', { textContent: 'Screen Export' }),
             element('button', { type: 'button', className: 'close', textContent: '×', ariaLabel: 'Close', title: 'Close', onclick: close })),
             settings, widthSection, summary, element('div', { className: 'preview' }, preview),
-            element('div', { className: 'controls' }, uploadButton, downloadButton, cancelButton, resetButton), status, result, debugPanel,
+            element('div', { className: 'controls' }, uploadButton, downloadButton, cancelButton, resetButton), status, jpegWarning, result, debugPanel,
             element('a', { className: 'comparison-only', href: `${SLOW}/comparison`, target: '_blank', rel: 'noopener noreferrer', textContent: 'Open slow.pics (login or access check)' }));
         shadow.append(style, picker, dialog);
         document.documentElement.append(host);
@@ -1242,6 +1253,7 @@
         }
 
         function showArea(area) {
+            clearJPEGWarning();
             state.root = area?.root || null;
             state.images = area?.images || [];
             state.selected.clear();
@@ -1312,6 +1324,7 @@
                 }
             }
             catch (error) { status.textContent = error.message; return; }
+            if (kind === 'download' || !state.job) clearJPEGWarning();
             if (tmdbSearchController) resetTMDBResults();
             setTMDBResultsOpen(false);
             const controller = new AbortController();
@@ -1412,7 +1425,7 @@
             if (dialog.open) dialog.focus();
             else picker.querySelector('button').focus();
         }, { signal: lifetime.signal });
-        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.2.2',
+        debug('ready', { scriptVersion: typeof GM_info === 'object' ? GM_info.script?.version : '1.2.3',
             manager: typeof GM_info === 'object' ? GM_info.scriptHandler : 'unknown',
             managerVersion: typeof GM_info === 'object' ? GM_info.version : 'unknown' });
         chooseArea();
