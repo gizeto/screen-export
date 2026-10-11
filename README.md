@@ -25,7 +25,7 @@ Enter `movie/123` or `tv/456` in **TMDB id**, or configure a **TMDB API key** in
 
 - Transfers run sequentially. **Cancel transfer** stops further requests. **Retry upload** resumes an interrupted upload while the dialog stays open; an unconfirmed upload may create a duplicate on retry.
 - **Start over**, closing the dialog or leaving the page discards retry state. Remote uploads are not deleted.
-- Access blocks and rate limits stop transfers. Check normal access to the host before retrying. **Debug log → Copy debug log** provides diagnostics without API keys, cookies or image paths.
+- Access blocks, login redirects and rate limits stop transfers. Check access to the host in its own tab and log in if needed before retrying. **Debug log → Copy debug log** provides diagnostics without API keys, cookies or image paths.
 - A warning appears during fetching if an original is JPEG (JPG). Transfers continue, and the warning stays visible afterward.
 - Images must exist as accessible `<img>` elements. Open collapsed content first and review automatic selection and column suggestions.
 

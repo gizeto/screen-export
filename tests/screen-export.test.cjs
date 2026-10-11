@@ -456,6 +456,18 @@ async function domTests(script) {
         equal(api.httpURL('javascript:alert(1)'), '');
         equal(api.httpURL('https://user:password@example.test/image.png'), '');
     });
+    const oldImagePage = 'https://s3.site.test:2096/image/Ab12';
+    const signedImageLink = `https://site.test/link.php?sign=PRIVATE_SIGNATURE&target=${encodeURIComponent(oldImagePage)}`;
+    const imagePage = 'https://s3.site.test/image/Ab12';
+    await test('old signed s3 image links drop the obsolete port after unwrapping', () => {
+        equal(api.originalURL(signedImageLink), imagePage);
+        equal(api.originalURL(oldImagePage), imagePage);
+        equal(api.originalURL(imagePage), imagePage);
+        equal(api.originalURL(`https://proxy.test/?url=${encodeURIComponent(signedImageLink)}`), imagePage);
+        for (const url of ['https://images.test:2096/image/Ab12', 'https://s3.site.test:8443/image/Ab12',
+            'https://s3.site.test:2096/images/Ab12.png', 'https://s3.site.test:2096/image/',
+            'http://s3.site.test:2096/image/Ab12']) equal(api.originalURL(url), url);
+    });
     const pngBytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='), char => char.charCodeAt(0));
     const png = new Blob([pngBytes], { type: 'image/png' });
     // Accept only the known fixture; decoder failures test the script's error handling.
@@ -464,6 +476,41 @@ async function domTests(script) {
         return { close() {} };
     };
     const imageResponse = () => ({ response: png });
+    await test('old signed links fetch the current image page and original using the logged-in session', async () => {
+        calls.length = 0;
+        const original = 'https://s3.site.test/images/frame.png';
+        handler = options => {
+            if (options.url === imagePage) return { response: new Blob([
+                '<meta property="og:image" content="/images/frame.png"><script>window.oldHostScriptRan=true</script>'
+            ], { type: 'text/html' }) };
+            if (options.url === original) return imageResponse();
+            throw new Error('Unexpected image URL');
+        };
+        const file = await api.fetchOriginal({ link: signedImageLink, source: oldImagePage }, controller().signal);
+        equal(calls.map(call => call.url), [imagePage, original]);
+        ok(calls.every(call => call.anonymous === false && !call.cookie && !call.headers && !call.cookiePartition));
+        equal(file.extension, 'png');
+        equal([...new Uint8Array(await file.blob.arrayBuffer())], [...pngBytes]);
+        ok(!globalThis.oldHostScriptRan);
+        ok(!api.diagnostics.join('\n').includes('PRIVATE_SIGNATURE'));
+    });
+    await test('a login redirect stops fetching before fallback images and allows retry after login', async () => {
+        calls.length = 0;
+        handler = () => ({ finalUrl: 'https://s3.site.test/login', response: new Blob([
+            '<html><meta property="og:image" content="/images/login.png"></html>'
+        ], { type: 'text/html' }) });
+        const item = { link: signedImageLink, source: 'https://s3.site.test/images/fallback.png' };
+        const messages = [];
+        await api.download([item, { source: 'https://s3.site.test/images/next.png' }],
+            ['GroupA', 'GroupB'], controller().signal, message => messages.push(message));
+        equal(calls.map(call => call.url), [imagePage]);
+        ok(messages.at(-1).startsWith('Stopped — ZIP download incomplete.'));
+        ok(/https:\/\/s3\.site\.test.*log in.*retry/.test(messages.at(-1)), messages.at(-1));
+        ok(!/\bGET\b|HTTP 200|\[redacted\]/.test(messages.at(-1)), messages.at(-1));
+        handler = imageResponse;
+        equal((await api.fetchOriginal(item, controller().signal)).extension, 'png');
+        equal(calls.map(call => call.url), [imagePage, imagePage]);
+    });
     await test('Pixhost thumbnail-only images resolve across domains and server numbers without fetching thumbnails', async () => {
         for (const [domain, server] of [['pixhost.cc', '3'], ['pixhost.to', '97'], ['pixho.st', '12']]) {
             calls.length = 0;
@@ -1476,6 +1523,35 @@ async function domTests(script) {
         equal(imagesAPI.state.job.done, 0);
         imagesAPI.resetButton.click();
     });
+    await test('login messages link to the host in a new tab for downloads and uploads', async () => {
+        chooseHost('pixhost');
+        const items = [{ link: signedImageLink, source: 'https://s3.site.test/images/fallback.png', preview: imagePage }, standaloneItems[1]];
+        for (const kind of ['download', 'upload']) {
+            imagesAPI.showArea({ root: null, images: items, names: ['GroupA', 'GroupB'] });
+            [...imagesAPI.candidates.children].forEach(tile => tile.click());
+            calls.length = 0;
+            handler = () => ({ finalUrl: 'https://s3.site.test/login?next=PRIVATE_IMAGE',
+                response: new Blob(['<html>Login</html>'], { type: 'text/html' }) });
+            await imagesAPI.run(kind);
+            equal(calls.map(call => call.url), [imagePage]);
+            const link = imagesAPI.status.querySelector('a');
+            ok(link, imagesAPI.status.innerHTML);
+            equal(link.href, 'https://s3.site.test/');
+            equal(link.textContent, 'https://s3.site.test');
+            equal(link.target, '_blank');
+            equal(link.rel, 'noopener noreferrer');
+            ok(imagesAPI.status.textContent.includes('Open https://s3.site.test, log in, then retry.'));
+            ok(!/\bGET\b|HTTP 200|\[redacted\]|PRIVATE_IMAGE/.test(imagesAPI.status.textContent));
+            ok(imagesAPI.diagnostics.some(line => line.includes('"category":"login"') && line.includes('"status":200')));
+            handler = () => {
+                ok(!imagesAPI.status.querySelector('a'), 'Progress should clear the login link');
+                return { status: 503 };
+            };
+            await imagesAPI.run(kind);
+            ok(!imagesAPI.status.querySelector('a'));
+            imagesAPI.resetButton.click();
+        }
+    });
     await test('JPEG originals warn before uploading, persist through retries and clear on start over', async () => {
         const decoder = createImageBitmap;
         const jpegBytes = [255, 216, 255, 224, 0, 16];
@@ -1680,8 +1756,16 @@ async function domTests(script) {
         await comparisonAPI.copyComparisonBBCode(job, output, copy);
         equal(calls.length, 1);
         comparisonAPI.retryAfter.clear();
+        handler = () => ({ finalUrl: 'https://slow.pics/login' });
+        await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        const loginLink = comparisonAPI.status.querySelector('a');
+        ok(loginLink);
+        equal(loginLink.href, 'https://slow.pics/');
+        equal(loginLink.target, '_blank');
+        ok(!/HTTP 200|\[redacted\]/.test(comparisonAPI.status.textContent));
         handler = () => ({ responseText: 'unreadable' });
         await comparisonAPI.copyComparisonBBCode(job, output, copy);
+        ok(!comparisonAPI.status.querySelector('a'));
         equal(job.bbcode, undefined);
         let entered;
         const pending = new Promise(resolve => { entered = resolve; });

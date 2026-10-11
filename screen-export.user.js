@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screen Export
 // @namespace    https://github.com/gizeto/screen-export
-// @version      1.2.6
+// @version      1.2.8
 // @description  Export selected images to comparison and image hosts, or download originals as a ZIP.
 // @author       gizeto
 // @downloadURL  https://raw.githubusercontent.com/gizeto/screen-export/master/screen-export.user.js
@@ -133,6 +133,9 @@
             const resolved = unwrapURL(value);
             if (!resolved) return '';
             const url = new URL(resolved);
+            // Migrate the image page after unwrapping, without reusing the old redirect signature.
+            if (url.protocol === 'https:' && url.port === '2096' && /^s3\./.test(url.hostname)
+                && /^\/image\/[^/]+\/?$/.test(url.pathname)) url.port = '';
             if (/^(?:t|i|img)\.hdbits\.org$/.test(url.hostname)) {
                 const hash = url.pathname.match(/^\/(?:getimg\/)?([\w-]+)(?:\.jpe?g)?\/?$/i)?.[1];
                 if (hash) return `https://img.hdbits.org/getimg/${hash}`;
@@ -343,16 +346,17 @@
                 const delay = responseHeader(response, 'retry-after');
                 const until = /^\d+$/.test(delay) ? Date.now() + Number(delay) * 1000 : Date.parse(delay);
                 if (Number.isFinite(until) && until > Date.now()) retryAfter.set(origin, until);
-                const stopTransfer = [403, 429].includes(response.status) || ['challenge', 'access-block', 'rate-limit'].includes(info.category);
+                const stopTransfer = [403, 429].includes(response.status) || ['challenge', 'access-block', 'rate-limit', 'login'].includes(info.category);
                 const hint = {
                     challenge: 'An access challenge was returned. Stop here and check the site in its own tab; the script will not solve challenges or retry automatically.',
                     'access-block': 'The host blocked access. Stop requests and check access with the host before retrying.',
                     'rate-limit': 'The host rate-limited the request. Stop requests and wait before retrying.',
                     csrf: 'The host rejected the CSRF token. Refresh the host page in your logged-in tab before a manual retry.',
-                    login: 'The request did not reach a logged-in session. Check the host in its own tab.',
+                    login: `Open ${origin}, log in, then retry.`,
                     http: `The reason is unconfirmed. See Debug log for the failed endpoint.${response.status === 403 ? ' Do not repeatedly retry a 403.' : ''}`
                 }[info.category];
-                throw Object.assign(new Error(`${method} ${target}: HTTP ${response.status}. ${hint}`), { stopTransfer, status: response.status });
+                throw Object.assign(new Error(info.category === 'login' ? hint : `${method} ${target}: HTTP ${response.status}. ${hint}`),
+                    { stopTransfer, status: response.status, loginURL: info.category === 'login' ? origin : '' });
             }
             if (response.finalUrl && !httpURL(response.finalUrl)) throw new Error('Unsupported redirect.');
             return response;
@@ -403,7 +407,7 @@
                         checkAbort(signal);
                         if (visited.has(url) || knownThumbnail(url)) throw new Error('Could not resolve the original; refusing a known thumbnail.');
                         visited.add(url);
-                        const response = await request(url, { responseType: 'blob' }, signal);
+                        const response = await request(url, { responseType: 'blob', anonymous: false }, signal);
                         if (response.finalUrl && knownThumbnail(response.finalUrl)) throw new Error('The host redirected to a thumbnail; the original is unavailable.');
                         const blob = response.response;
                         const prefix = await blob.slice(0, 256).text();
@@ -841,7 +845,7 @@
                 status(`Saved ${archiveName} — ${files.length} images.`);
             } catch (error) {
                 status(error.name === 'AbortError' ? 'Cancelled — ZIP download incomplete.'
-                    : `Stopped — ZIP download incomplete. ${error.message}`);
+                    : `Stopped — ZIP download incomplete. ${error.message}`, error);
             }
         }
 
@@ -1034,6 +1038,14 @@
         const summary = element('p');
         const preview = element('div', { className: 'grid' });
         const status = element('p', { className: 'status', role: 'status' });
+        function report(message, error) {
+            const loginURL = error?.loginURL;
+            const offset = loginURL ? message.indexOf(loginURL) : -1;
+            if (offset < 0) { status.textContent = message; return; }
+            status.replaceChildren(message.slice(0, offset),
+                element('a', { href: loginURL, target: '_blank', rel: 'noopener noreferrer', textContent: loginURL }),
+                message.slice(offset + loginURL.length));
+        }
         const jpegWarning = element('p', { className: 'warning', role: 'alert', hidden: true });
         function clearJPEGWarning() {
             jpegWarning.hidden = true;
@@ -1326,7 +1338,6 @@
             const controller = new AbortController();
             state.active = controller;
             if (uploading && !standalone) result.replaceChildren();
-            const report = message => { status.textContent = message; };
             debug('transfer-start', { kind, images: items.length, columns: labels.length, completed: uploading ? state.job?.done || 0 : 0 });
             try {
                 if (uploading) {
@@ -1358,7 +1369,7 @@
                 const progress = uploading && state.job ? ` ${state.job.done}/${state.job.items.length} uploaded.` : '';
                 report(`${error.name === 'AbortError' ? 'Cancelled.' : error.message}${progress}`
                     + (uploading && standalone && state.job ? ' Completed results are kept. Retry resumes at the first unconfirmed image; a lost response may cause a duplicate.' : '')
-                    + (uploading && state.job?.collection ? ' The remote collection is incomplete. After resolving the error, retry upload to resume, or start over to change the selection.' : ''));
+                    + (uploading && state.job?.collection ? ' The remote collection is incomplete. After resolving the error, retry upload to resume, or start over to change the selection.' : ''), error);
             } finally {
                 state.active = null;
                 if (host.isConnected) update();
@@ -1387,8 +1398,8 @@
                     status.textContent = 'Clipboard access was denied. Select and copy the comparison BBCode below.';
                 }
             } catch (error) {
-                status.textContent = `Upload complete. ${error.name === 'AbortError' ? 'BBCode lookup cancelled.' : error.message}`
-                    + ' The comparison link is still available. Click Copy BBCode to try again.';
+                report(`Upload complete. ${error.name === 'AbortError' ? 'BBCode lookup cancelled.' : error.message}`
+                    + ' The comparison link is still available. Click Copy BBCode to try again.', error);
             } finally {
                 state.active = null;
                 copyButton.disabled = false;
